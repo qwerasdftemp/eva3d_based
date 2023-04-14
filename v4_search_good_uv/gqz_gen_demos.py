@@ -16,7 +16,7 @@ from scipy.spatial import Delaunay
 from scipy.spatial.transform import Rotation as R
 from options import BaseOptions
 from model import VoxelHumanGenerator as Generator
-from dataset import DeepFashionDataset, DemoDataset
+from dataset import DeepFashionDataset, DemoDataset,gqz_DemoDataset
 from utils import (
     generate_camera_params,
     align_volume,
@@ -38,7 +38,7 @@ from pytorch3d.renderer import (
 # import random
 # random.seed(10086)
 
-panning_angle = np.pi / 2
+panning_angle = np.pi / 3
 
 def generate(opt, dataset, g_ema, device, mean_latent, is_video):
     requires_grad(g_ema, False)
@@ -51,30 +51,29 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
         else:
             # if i % 2 == 0:
             sample_z = torch.randn(1, opt.style_dim, device=device)
-        sample_z_list[str(i).zfill(7)] = sample_z.cpu().numpy()
-
         sample_z = torch.from_numpy(np.random.RandomState(i).randn(1,opt.style_dim)).to(device).float()
-        # import pdb; pdb.set_trace()
+
+        sample_z_list[str(i).zfill(7)] = sample_z.cpu().numpy()
+        
         sample_trans, sample_beta, sample_theta = dataset.sample_smpl_param(1, device, val=False)
-        # print(sample_theta)
         sample_cam_extrinsics, sample_focals = dataset.get_camera_extrinsics(1, device, val=False)
 
         if is_video:
             video_list = []
-            for k in tqdm(range(120)):
-                # print(k,angle)
+            for k in range(300):
+                print(k)
+                sample_trans, sample_beta, sample_theta = dataset.sample_smpl_param(k, device, val=False)
                 if k < 30:
                     angle = (panning_angle / 2) * (k / 30)
                 elif k >= 30 and k < 90:
                     angle = panning_angle / 2 - panning_angle * ((k - 30) / 60)
                 else:
                     angle = -panning_angle / 2 * ((120 - k) / 30)
-                print(k,angle)
                 delta = R.from_rotvec(angle * np.array([0, 1, 0]))
                 r = R.from_rotvec(sample_theta[0, :3].cpu().numpy())
                 new_r = delta * r
                 new_sample_theta = sample_theta.clone()
-                new_sample_theta[0, :3] = torch.from_numpy(new_r.as_rotvec()).to(device)
+                # new_sample_theta[0, :3] = torch.from_numpy(new_r.as_rotvec()).to(device)
                 with torch.no_grad():
                     j = 0
                     chunk = 1
@@ -225,10 +224,6 @@ if __name__ == "__main__":
                                     'models_{}.pt'.format(opt.experiment.ckpt.zfill(7)))
     # define results directory name
     result_model_dir = 'iter_{}'.format(opt.experiment.ckpt.zfill(7))
-    # import pdb; pdb.set_trace()
-    if opt.experiment.load_path is not None:
-        checkpoint_path = opt.experiment.load_path
-    
 
     # create results directory
     results_dir_basename = os.path.join(opt.inference.results_dir, opt.experiment.expname)
@@ -236,19 +231,15 @@ if __name__ == "__main__":
     if opt.inference.fixed_camera_angles:
         opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'fixed_angles')
     else:
-        opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'random_angles')
-    if opt.experiment.load_path is not None:
-        opt.inference.results_dst_dir = os.path.join(results_dir_basename, os.path.basename(opt.experiment.load_path).split('.')[0])
+        opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, opt.inference.result_name)
     os.makedirs(opt.inference.results_dst_dir, exist_ok=True)
-
     if not opt.rendering.render_video:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_fig'), exist_ok=True)
     else:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_video'), exist_ok=True)
     os.makedirs(os.path.join(opt.inference.results_dst_dir, 'marching_cubes_meshes_posed'), exist_ok=True)
-
     checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
-    
+
     # load generation model
     g_ema = Generator(opt.model, opt.rendering, full_pipeline=False, voxhuman_name=opt.model.voxhuman_name).to(device)
     pretrained_weights_dict = checkpoint["g_ema"]
@@ -275,7 +266,7 @@ if __name__ == "__main__":
         dataset = DeepFashionDataset(opt.dataset.dataset_path, transform, opt.model.size,
                                      opt.model.renderer_spatial_output_dim, file_list)
     else:
-        dataset = DemoDataset()
+        dataset = gqz_DemoDataset()
 
     # get the mean latent vector for g_ema
     if opt.inference.truncation_ratio < 1:

@@ -22,10 +22,11 @@ class BaseOptions():
         experiment.add_argument("--expname", type=str, default='debug', help='experiment name')
         experiment.add_argument("--ckpt", type=str, default='300000', help="path to the checkpoints to resume training")
         experiment.add_argument("--continue_training", action="store_true", help="continue training the model")
-
+        experiment.add_argument("--load_path", type=str, default=None, help='directly_load_path')
         # Training loop options
         training = self.parser.add_argument_group('training')
         training.add_argument("--checkpoints_dir", type=str, default='./checkpoint', help='checkpoints directory name')
+        
         training.add_argument("--iter", type=int, default=300000, help="total number of training iterations")
         training.add_argument("--batch", type=int, default=4, help="batch sizes for each GPU. A single RTX2080 can fit batch=4, chunck=1 into memory.")
         training.add_argument("--chunk", type=int, default=4, help='number of samples within a batch to processed in parallel, decrease if running out of memory')
@@ -53,6 +54,7 @@ class BaseOptions():
         # Inference Options
         inference = self.parser.add_argument_group('inference')
         inference.add_argument("--results_dir", type=str, default='./evaluations', help='results/evaluations directory name')
+        inference.add_argument("--result_name", type=str, default='', help='go')
         inference.add_argument("--truncation_ratio", type=float, default=0.5, help="truncation ratio, controls the diversity vs. quality tradeoff. Higher truncation ratio would generate more diverse results")
         inference.add_argument("--truncation_mean", type=int, default=10000, help="number of vectors to calculate mean for the truncation")
         inference.add_argument("--identities", type=int, default=16, help="number of identities to be generated")

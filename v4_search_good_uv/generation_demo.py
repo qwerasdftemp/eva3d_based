@@ -38,7 +38,7 @@ from pytorch3d.renderer import (
 # import random
 # random.seed(10086)
 
-panning_angle = np.pi / 3
+panning_angle = np.pi / 2
 
 def generate(opt, dataset, g_ema, device, mean_latent, is_video):
     requires_grad(g_ema, False)
@@ -52,18 +52,24 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
             # if i % 2 == 0:
             sample_z = torch.randn(1, opt.style_dim, device=device)
         sample_z_list[str(i).zfill(7)] = sample_z.cpu().numpy()
+
+        sample_z = torch.from_numpy(np.random.RandomState(i).randn(1,opt.style_dim)).to(device).float()
+        # import pdb; pdb.set_trace()
         sample_trans, sample_beta, sample_theta = dataset.sample_smpl_param(1, device, val=False)
+        # print(sample_theta)
         sample_cam_extrinsics, sample_focals = dataset.get_camera_extrinsics(1, device, val=False)
 
         if is_video:
             video_list = []
             for k in tqdm(range(120)):
+                # print(k,angle)
                 if k < 30:
                     angle = (panning_angle / 2) * (k / 30)
                 elif k >= 30 and k < 90:
                     angle = panning_angle / 2 - panning_angle * ((k - 30) / 60)
                 else:
                     angle = -panning_angle / 2 * ((120 - k) / 30)
+                print(k,angle)
                 delta = R.from_rotvec(angle * np.array([0, 1, 0]))
                 r = R.from_rotvec(sample_theta[0, :3].cpu().numpy())
                 new_r = delta * r
@@ -219,6 +225,10 @@ if __name__ == "__main__":
                                     'models_{}.pt'.format(opt.experiment.ckpt.zfill(7)))
     # define results directory name
     result_model_dir = 'iter_{}'.format(opt.experiment.ckpt.zfill(7))
+    # import pdb; pdb.set_trace()
+    if opt.experiment.load_path is not None:
+        checkpoint_path = opt.experiment.load_path
+    
 
     # create results directory
     results_dir_basename = os.path.join(opt.inference.results_dir, opt.experiment.expname)
