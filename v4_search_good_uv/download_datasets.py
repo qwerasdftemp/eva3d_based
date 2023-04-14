@@ -6,7 +6,7 @@ import hashlib
 import requests
 from tqdm import tqdm
 from pdb import set_trace as st
-[=]
+
 deepfashion_info = dict(file_url='https://api.onedrive.com/v1.0/shares/u!aHR0cHM6Ly8xZHJ2Lm1zL3UvcyFBakxwRmctZjQ4bGpnYzFXU1dsMFhwWWZzWDBCTFE_ZT1vM3RWdmI/root/content',
                         alt_url='', file_size=4499345395, file_md5='cb3122bbf766ccc1cb68f6b61060c096',
                         file_path='datasets/DeepFashion.zip',)

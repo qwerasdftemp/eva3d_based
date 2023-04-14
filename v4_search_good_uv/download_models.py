@@ -6,23 +6,57 @@ import hashlib
 import requests
 from tqdm import tqdm
 from pdb import set_trace as st
-[=]
-deepfashion_info = dict(file_url='https://api.onedrive.com/v1.0/shares/u!aHR0cHM6Ly8xZHJ2Lm1zL3UvcyFBakxwRmctZjQ4bGpnYzFXU1dsMFhwWWZzWDBCTFE_ZT1vM3RWdmI/root/content',
-                        alt_url='', file_size=4499345395, file_md5='cb3122bbf766ccc1cb68f6b61060c096',
-                        file_path='datasets/DeepFashion.zip',)
 
-def download_deepfashion():
-    print('Downloading DeepFashion Datasets...')
+eva3d_deepfashion_model = dict(file_url='https://drive.google.com/uc?id=1SYPjxnHz3XPRhTarx_Lw8SG_iz16QUMU',
+                            alt_url='', file_size=160393221, file_md5='d0fae86edf76c52e94223bd3f39b2157',
+                            file_path='checkpoint/512x256_deepfashion/volume_renderer/models_0420000.pt',)
+
+eva3d_shhq_model = dict(file_url='https://drive.google.com/uc?id=1mSE9f9N7xTjSvsn9epTaDmFhNNIox2Hd',
+                            alt_url='', file_size=160393221, file_md5='8b1a26134f3a832958addc71642b21ac',
+                            file_path='checkpoint/512x256_shhq/volume_renderer/models_0740000.pt',)
+
+eva3d_aist_model = dict(file_url='https://drive.google.com/uc?id=1jTzQRXVtlHXM1Zj9SBnGl2FZa_-aQFSK',
+                            alt_url='', file_size=158403591, file_md5='2ccccb17b7571e6e96e0861e39f5d847',
+                            file_path='checkpoint/256x256_aist/volume_renderer/models_0340000.pt',)
+
+eva3d_ubcfashion_model = dict(file_url='https://drive.google.com/uc?id=1BCpc5tj8a1DDymYSYpTMo4YDYksUICE0',
+                            alt_url='', file_size=160416931, file_md5='26bdd36d662c5bc28b6a597bceee4f03',
+                            file_path='checkpoint/512x256_ubcfashion/volume_renderer/models_0620000.pt',)
+
+def download_pretrained_models():
+    print('Downloading EVA3D model pretrained on DeepFashion.')
     with requests.Session() as session:
         try:
-            download_file(session, deepfashion_info)
+            download_file(session, eva3d_deepfashion_model)
         except:
             print('Google Drive download failed.\n' \
                   'Trying do download from alternate server')
-            download_file(session, deepfashion_info, use_alt_url=True)
-    os.system('unzip datasets/DeepFashion.zip -d datasets')
-    os.system('rm datasets/DeepFashion.zip')
-
+            download_file(session, eva3d_deepfashion_model, use_alt_url=True)
+    print('Downloading EVA3D model pretrained on SHHQ.')
+    with requests.Session() as session:
+        try:
+            download_file(session, eva3d_shhq_model)
+        except:
+            print('Google Drive download failed.\n' \
+                  'Trying do download from alternate server')
+            download_file(session, eva3d_shhq_model, use_alt_url=True)
+    print('Downloading EVA3D model pretrained on UBCFashion.')
+    with requests.Session() as session:
+        try:
+            download_file(session, eva3d_ubcfashion_model)
+        except:
+            print('Google Drive download failed.\n' \
+                  'Trying do download from alternate server')
+            download_file(session, eva3d_ubcfashion_model, use_alt_url=True)
+    print('Downloading EVA3D model pretrained on AIST.')
+    with requests.Session() as session:
+        try:
+            download_file(session, eva3d_aist_model)
+        except:
+            print('Google Drive download failed.\n' \
+                  'Trying do download from alternate server')
+            download_file(session, eva3d_aist_model, use_alt_url=True)
+    
 
 def download_file(session, file_spec, use_alt_url=False, chunk_size=128, num_attempts=10):
     file_path = file_spec['file_path']
@@ -87,4 +121,4 @@ def download_file(session, file_spec, use_alt_url=False, chunk_size=128, num_att
             pass
 
 if __name__ == "__main__":
-    download_deepfashion()
+    download_pretrained_models()
