@@ -1,0 +1,6 @@
+*.pth
+__pycache__
+smpl_models
+checkpoint
+evaluations
+datasets
