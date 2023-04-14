@@ -526,7 +526,11 @@ class VoxelHuman(nn.Module):
 
         self.plane_axes = generate_planes()
         self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
-
+    def get_eikonal_term(self, pts, sdf):
+        eikonal_term = autograd.grad(outputs=sdf, inputs=pts,
+                                     grad_outputs=torch.ones_like(sdf),
+                                     create_graph=True)[0]
+                                    
     def compute_actual_bbox(self, beta):
         actual_vox_bbox = []
         init_J = get_J(beta.reshape(1, 10), self.smpl_model)
@@ -1316,18 +1320,18 @@ class VoxelHuman(nn.Module):
 
             if return_eikonal:
                 eikonal_term = self.vox_list[i].get_eikonal_term(
-                    cur_xyz, tmp_output[..., -1]
+                    cur_uvd, tmp_output[..., -1]
                 )
                 eikonal_term_list.append(eikonal_term)
-                normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)
-                normal_tmp[cur_new_mask] = eikonal_term * weights.view(-1, 1)
-                try:
-                    if torch.any(cur_mask):
-                        normal_tmp = torch.matmul(forward_skinning_T_list[i][..., :3, :3].reshape(-1, 3, 3), normal_tmp.reshape(-1, 3).unsqueeze(-1))[..., 0].view(-1, self.N_samples, 3)
-                        normal[cur_mask] += normal_tmp.view(-1, self.N_samples, 3)
-                except Exception as e:
-                    print(e)
-                    st()
+                # normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)
+                # normal_tmp[cur_new_mask] = eikonal_term * weights.view(-1, 1)
+                # try:
+                #     if torch.any(cur_mask):
+                #         normal_tmp = torch.matmul(forward_skinning_T_list[i][..., :3, :3].reshape(-1, 3, 3), normal_tmp.reshape(-1, 3).unsqueeze(-1))[..., 0].view(-1, self.N_samples, 3)
+                #         normal[cur_mask] += normal_tmp.view(-1, self.N_samples, 3)
+                # except Exception as e:
+                #     print(e)
+                #     st()
 
         sdf = raw[..., -1]
         sdf[counter.squeeze(-1) == 0] = 1

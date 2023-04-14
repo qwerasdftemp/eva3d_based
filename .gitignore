@@ -1,6 +1,7 @@
 *__pycache__*
 .cache/
 data_for_run/
+*core.[0-9]*
 */results/
 */.tensorboard-info/
 */checkpoints/
@@ -14,7 +15,7 @@ pretrained/
 out/
 out2/
 debug/
-*.core
+**/core.[0-9]*
 clib/*.so
 clib.egg-info/
 checkepoints

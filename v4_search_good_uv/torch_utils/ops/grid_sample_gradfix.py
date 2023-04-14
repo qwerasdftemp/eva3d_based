@@ -77,7 +77,7 @@ class _GridSample2dBackward(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             grad2_grad_output = _GridSample2dForward.apply(grad2_grad_input, grid)
 
-        assert not ctx.needs_input_grad[2]
+        # assert not ctx.needs_input_grad[2]
         return grad2_grad_output, grad2_input, grad2_grid
 
 #----------------------------------------------------------------------------
