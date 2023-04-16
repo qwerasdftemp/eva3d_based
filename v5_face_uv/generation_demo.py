@@ -237,18 +237,14 @@ if __name__ == "__main__":
         opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'fixed_angles')
     else:
         opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'random_angles')
-    if opt.experiment.load_path is not None:
-        opt.inference.results_dst_dir = os.path.join(results_dir_basename, os.path.basename(opt.experiment.load_path).split('.')[0])
     os.makedirs(opt.inference.results_dst_dir, exist_ok=True)
-
     if not opt.rendering.render_video:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_fig'), exist_ok=True)
     else:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_video'), exist_ok=True)
     os.makedirs(os.path.join(opt.inference.results_dst_dir, 'marching_cubes_meshes_posed'), exist_ok=True)
-
     checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
-    
+
     # load generation model
     g_ema = Generator(opt.model, opt.rendering, full_pipeline=False, voxhuman_name=opt.model.voxhuman_name).to(device)
     pretrained_weights_dict = checkpoint["g_ema"]

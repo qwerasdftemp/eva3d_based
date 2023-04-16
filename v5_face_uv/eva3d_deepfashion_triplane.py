@@ -10,8 +10,69 @@ from pdb import set_trace as st
 from smplx.lbs import transform_mat, blend_shapes
 from pytorch3d.ops.knn import knn_gather, knn_points
 from pytorch3d.io import load_obj
-from volume_renderer import SirenGenerator
+from volume_renderer import SirenGenerator,LinearLayer
 from smpl_utils import init_smpl, get_J, get_shape_pose, batch_rodrigues
+from training.networks_stylegan2 import Generator as StyleGAN2Backbone
+import dnnlib
+from pytorch3d.structures import Meshes
+
+from torch_utils.ops import grid_sample_gradfix
+from training.networks_stylegan2 import FullyConnectedLayer
+# from volui
+def generate_planes():
+    """
+    Defines planes by the three vectors that form the "axes" of the
+    plane. Should work with arbitrary number of planes and planes of
+    arbitrary orientation.
+    """
+    # return torch.tensor([[[1, 0, 0],
+    #                         [0, 1, 0],
+    #                         [0, 0, 1]],
+    #                         [[1, 0, 0],
+    #                         [0, 0, 1],
+    #                         [0, 1, 0]],
+    #                         [[0, 0, 1],
+    #                         [1, 0, 0],
+    #                         [0, 1, 0]]], dtype=torch.float32)
+    return torch.tensor([[[1, 0, 0],
+                            [0, 1, 0],
+                            [0, 0, 1]],
+                            [[1, 0, 0],
+                            [0, 0, 1],
+                            [0, 1, 0]],
+                            [[0, 0, 1],
+                            [0, 1, 0],
+                            [1, 0, 0]]], dtype=torch.float32)
+
+def project_onto_planes(planes, coordinates):
+    """
+    Does a projection of a 3D point onto a batch of 2D planes,
+    returning 2D plane coordinates.
+
+    Takes plane axes of shape n_planes, 3, 3
+    # Takes coordinates of shape N, M, 3
+    # returns projections of shape N*n_planes, M, 2
+    """
+    N, M, C = coordinates.shape
+    n_planes, _, _ = planes.shape
+    coordinates = coordinates.unsqueeze(1).expand(-1, n_planes, -1, -1).reshape(N*n_planes, M, 3)
+    inv_planes = torch.linalg.inv(planes).unsqueeze(0).expand(N, -1, -1, -1).reshape(N*n_planes, 3, 3)
+    projections = torch.bmm(coordinates, inv_planes)
+    return projections[..., :2]
+
+def sample_from_planes(plane_axes, plane_features, coordinates, mode='bilinear', padding_mode='zeros', box_warp=None):
+    assert padding_mode == 'zeros'
+    N, n_planes, C, H, W = plane_features.shape
+    _, M, _ = coordinates.shape
+    plane_features = plane_features.view(N*n_planes, C, H, W)
+    
+    # import pdb; pdb.set_trace()
+
+    coordinates = (2/box_warp) * coordinates # TODO: add specific box bounds
+    
+    projected_coordinates = project_onto_planes(plane_axes, coordinates).unsqueeze(1)
+    output_features = grid_sample_gradfix.grid_sample(plane_features, projected_coordinates.float()).permute(0, 3, 2, 1).reshape(N, n_planes, M, C)
+    return output_features
 
 class VoxelSDFRenderer(nn.Module):
     def __init__(self, opt, xyz_min, xyz_max, style_dim=256, mode='train'):
@@ -244,6 +305,45 @@ class VoxelSDFRenderer(nn.Module):
 
         return rgb, features, sdf, mask, xyz, eikonal_term
 
+class OSGDecoder(torch.nn.Module):
+    def __init__(self, n_features, options):
+        super().__init__()
+        self.hidden_dim = 64
+        # self.merge_feature = torch.nn.Sequential(
+        #     FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
+        #     torch.nn.Softplus(),
+        #     FullyConnectedLayer(self.hidden_dim, 1 + options['decoder_output_dim'], lr_multiplier=options['decoder_lr_mul'])
+        # )
+
+        self.net = torch.nn.Sequential(
+            FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
+            torch.nn.Softplus(),
+            FullyConnectedLayer(self.hidden_dim,self.hidden_dim, lr_multiplier=options['decoder_lr_mul'])
+        )
+        self.act = torch.nn.Softplus()
+        self.sdf_layer =  LinearLayer(self.hidden_dim, 1, freq_init=True)
+        self.feature_layer = LinearLayer(self.hidden_dim, options['decoder_output_dim'], freq_init=True)
+
+    def forward(self, sampled_features, ray_directions):
+        # Aggregate features
+        # sampled_features = sampled_features.mean(1)
+        x = sampled_features
+
+        N, M, C = x.shape
+        x = x.view(N*M, C)
+
+        x = self.net(x)
+        x = self.act(x)
+        
+        sdf  = self.sdf_layer(x)
+        rgb = self.feature_layer(x)
+
+        rgb = torch.sigmoid(rgb)*(1 + 2*0.001) - 0.001
+        rgb = rgb.view(N, M, -1)
+        sdf = sdf.view(N, M, -1)
+        outputs = torch.cat([rgb, sdf], -1)
+
+        return outputs
 
 class VoxelHuman(nn.Module):
     def __init__(self, opt, smpl_cfgs, style_dim, out_im_res=(128, 64), mode='train'):
@@ -302,6 +402,9 @@ class VoxelHuman(nn.Module):
 
         self.smpl_seg = self.smpl_model.lbs_weights.argmax(-1)
         self.voxind2voxlist = {}
+
+
+
         # import pdb; pdb.set_trace()
         # for j in range(num_joints):
         #     # pj = parents[j]
@@ -398,6 +501,8 @@ class VoxelHuman(nn.Module):
         verts, faces, aux = load_obj(template_path)
         uvfaces = faces.textures_idx[None,...] 
         faces = faces.verts_idx[None,...]
+        self.register_buffer('faces', faces)
+        self.faces.requires_grad=False
         uvcoords = aux.verts_uvs[None,...]*2-1 
         
         vertics_uv_position = torch.zeros_like(verts)[:,0:2]
@@ -407,6 +512,16 @@ class VoxelHuman(nn.Module):
         vertics_uv_position = vertics_uv_position[:,0:2]
 
         self.uvcoords = vertics_uv_position
+        mapping_kwargs=dnnlib.EasyDict()
+        mapping_kwargs.num_layers =2
+
+        self.cos = nn.CosineSimilarity(dim=2, eps=1e-6)
+        # G_kwargs = dnnlib.EasyDict(z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
+
+        self.backbone = StyleGAN2Backbone(512, 0, 512, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs)
+
+        self.plane_axes = generate_planes()
+        self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
 
     def compute_actual_bbox(self, beta):
         actual_vox_bbox = []
@@ -607,6 +722,9 @@ class VoxelHuman(nn.Module):
 
     def sample_ray(self, beta, theta, trans, rays_o, rays_d, K=3):
         # import pdb; pdb.set_trace()
+        
+
+
         _theta = theta.reshape(1, 24, 3, 3)
         so = self.smpl_model(betas = beta.reshape(1, 10), body_pose = _theta[:, 1:], global_orient = _theta[:, 0].view(1, 1, 3, 3))
         smpl_v = so['vertices'].clone().reshape(-1, 3)
@@ -614,6 +732,10 @@ class VoxelHuman(nn.Module):
         # import pdb; pdb.set_trace()
         del so
         global_smplv = smpl_v+trans
+
+        mesh_this = Meshes(verts=global_smplv.unsqueeze(0),faces=self.faces.expand(1,-1,-1))
+        global_smplv_norm = torch.stack(mesh_this.verts_normals_list())
+
         init_J = get_J(beta.reshape(1, 10), self.smpl_model)
         # first sample ray pts for each voxel
         rays_pts_local_list = []
@@ -695,6 +817,11 @@ class VoxelHuman(nn.Module):
         smpl_v_inv = torch.matmul(self.smpl_model.lbs_weights.reshape(-1, self.num_joints), rel_transforms.reshape(1, self.num_joints, 16)).reshape(-1, 4, 4)
         smpl_v_inv = torch.inverse(smpl_v_inv)
 
+        # cur_smpl_v = smpl_v + trans
+
+        
+
+        
         for i, cur_vox in enumerate(self.vox_list):
             # vox_i = self.vox_index[i]
             # cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
@@ -705,6 +832,7 @@ class VoxelHuman(nn.Module):
 
             ### extract current related smpl vertices
             # cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
+            # cur_smpl_v = smpl_v + trans
             cur_smpl_v = smpl_v + trans
             cur_blend_weights = self.smpl_model.lbs_weights.reshape(-1, self.num_joints)
             # import pdb; pdb.set_trace()
@@ -740,6 +868,23 @@ class VoxelHuman(nn.Module):
             gather_uv = (gather_uv * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 2)
             # import pdb; pdb.set_trace()
             the_distance = ((nn.dists**0.5)*interp_weights.squeeze(-1).squeeze(-1)).sum(-1).reshape(1, -1, 1)
+            
+            gather_nearest_point= torch.gather(cur_smpl_v.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
+            gather_nearest_point = (gather_nearest_point * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
+
+            all_direction = flat_rays_pts_global-gather_nearest_point
+
+            gather_nearest_normal= torch.gather( global_smplv_norm.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
+            gather_nearest_normal = (gather_nearest_normal * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
+
+
+            cos_sim_dirction = self.cos(all_direction,gather_nearest_normal).unsqueeze(-1)
+            cos_sim_dirction[cos_sim_dirction>0]=1
+            cos_sim_dirction[cos_sim_dirction<0]=-1
+            
+            the_distance = the_distance*cos_sim_dirction
+
+            # import pdb; pdb.set_trace()
             # gather_uv = gather_uv[:,:,0,:]
             # cur_shape_transforms = shape_transforms.reshape(-1, 4, 4)
             # per_point_forward_transformation = torch.matmul(per_point_transformation, cur_shape_transforms)
@@ -764,7 +909,7 @@ class VoxelHuman(nn.Module):
             
 
 
-            rays_pts_uvd = torch.cat([the_distance,gather_uv],dim=2)
+            rays_pts_uvd = torch.cat([gather_uv,the_distance],dim=2)
 
 
             # import pdb; pdb.set_trace()
@@ -1016,6 +1161,8 @@ class VoxelHuman(nn.Module):
 
     def forward(self, cam_poses, focals, beta, theta, trans, styles=None, return_eikonal=False, no_white_bg=False, fix_viewdir=False, w_space=False, gamma_list=None, beta_list=None):
         # import pdb; pdb.set_trace()
+        self.plane_axes = self.plane_axes.to(styles.device)
+
         batch_size = cam_poses.shape[0]
         beta = beta[:1]
         theta = theta[:1]
@@ -1076,7 +1223,9 @@ class VoxelHuman(nn.Module):
         raw_template = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 4)
         normal = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 3)
         counter = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1)
-
+        
+        planes = self.backbone.synthesis(styles.unsqueeze(1).expand(-1,14,-1))
+        planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
         for i in range(len(self.vox_list)):
             cur_mask = ~valid_mask_outbbox_list[i]
             _cur_xyz = rays_pts_local_list[i][cur_mask].view(-1, 3)
@@ -1109,27 +1258,37 @@ class VoxelHuman(nn.Module):
             weights = torch.exp(-window_alpha * ((cur_xyz * 2) ** window_beta).sum(-1))
             if return_eikonal:
                 cur_xyz.requires_grad = True
-            if self.opt.input_ch_views == 3:
-                cur_input = torch.cat([
-                    cur_uvd.view(batch_size, -1, 3),
-                    cur_rays_d.view(batch_size, -1, 3)
-                ], -1)
-            elif self.opt.input_ch_views == 0:
-                # raise NotImplementedError
-                cur_input = cur_uvd.view(batch_size, -1, 3)
-            else:
-                raise NotImplementedError
-            
-            if w_space:
-                assert gamma_list is not None
-                assert beta_list is not None
-                tmp_output = self.vox_list[i].network.forward_with_gamma_beta(
-                    cur_input, gamma_list[i], beta_list[i]
-                ).view(-1, 4)
-            else:
-                tmp_output = self.vox_list[i].network(
-                    cur_input, styles=styles
-                ).view(-1, 4)
+                cur_uvd.requires_grad = True
+
+            # if self.opt.input_ch_views == 3:
+            #     cur_input = torch.cat([
+            #         cur_uvd.view(batch_size, -1, 3),
+            #         cur_rays_d.view(batch_size, -1, 3)
+            #     ], -1)
+            # elif self.opt.input_ch_views == 0:
+            #     # raise NotImplementedError
+            #     cur_input = cur_uvd.view(batch_size, -1, 3)
+            # else:
+            #     raise NotImplementedError
+            # import pdb; pdb.set_trace()
+            cur_input = cur_uvd.view(batch_size, -1, 3)
+
+            # if w_space:
+            #     assert gamma_list is not None
+            #     assert beta_list is not None
+            #     tmp_output = self.vox_list[i].network.forward_with_gamma_beta(
+            #         cur_input, gamma_list[i], beta_list[i]
+            #     ).view(-1, 4)
+            # else:
+            #     tmp_output = self.vox_list[i].network(
+            #         cur_input, styles=styles
+            #     ).view(-1, 4)
+            # # 在这里搞 triplane
+            sampled_features = sample_from_planes(self.plane_axes, planes, cur_input, padding_mode='zeros', box_warp=2)
+            sampled_features = sampled_features.mean(1)
+            # import pdb; pdb.set_trace()
+            tmp_output = self.decoder(sampled_features,None).view(-1, 4)
+
             actual_sdf_list.append(tmp_output[:, -1:].view(-1).clone())
             tmp_output[:, -1:] = tmp_output[:, -1:] + template_sdf
 

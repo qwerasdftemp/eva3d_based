@@ -10,8 +10,69 @@ from pdb import set_trace as st
 from smplx.lbs import transform_mat, blend_shapes
 from pytorch3d.ops.knn import knn_gather, knn_points
 from pytorch3d.io import load_obj
-from volume_renderer import SirenGenerator
+from volume_renderer import SirenGenerator,LinearLayer
 from smpl_utils import init_smpl, get_J, get_shape_pose, batch_rodrigues
+from training.networks_stylegan2 import Generator as StyleGAN2Backbone
+import dnnlib
+from pytorch3d.structures import Meshes
+from pytorch3d import _C
+from torch_utils.ops import grid_sample_gradfix
+from training.networks_stylegan2 import FullyConnectedLayer
+# from volui
+def generate_planes():
+    """
+    Defines planes by the three vectors that form the "axes" of the
+    plane. Should work with arbitrary number of planes and planes of
+    arbitrary orientation.
+    """
+    # return torch.tensor([[[1, 0, 0],
+    #                         [0, 1, 0],
+    #                         [0, 0, 1]],
+    #                         [[1, 0, 0],
+    #                         [0, 0, 1],
+    #                         [0, 1, 0]],
+    #                         [[0, 0, 1],
+    #                         [1, 0, 0],
+    #                         [0, 1, 0]]], dtype=torch.float32)
+    return torch.tensor([[[1, 0, 0],
+                            [0, 1, 0],
+                            [0, 0, 1]],
+                            [[1, 0, 0],
+                            [0, 0, 1],
+                            [0, 1, 0]],
+                            [[0, 0, 1],
+                            [0, 1, 0],
+                            [1, 0, 0]]], dtype=torch.float32)
+
+def project_onto_planes(planes, coordinates):
+    """
+    Does a projection of a 3D point onto a batch of 2D planes,
+    returning 2D plane coordinates.
+
+    Takes plane axes of shape n_planes, 3, 3
+    # Takes coordinates of shape N, M, 3
+    # returns projections of shape N*n_planes, M, 2
+    """
+    N, M, C = coordinates.shape
+    n_planes, _, _ = planes.shape
+    coordinates = coordinates.unsqueeze(1).expand(-1, n_planes, -1, -1).reshape(N*n_planes, M, 3)
+    inv_planes = torch.linalg.inv(planes).unsqueeze(0).expand(N, -1, -1, -1).reshape(N*n_planes, 3, 3)
+    projections = torch.bmm(coordinates, inv_planes)
+    return projections[..., :2]
+
+def sample_from_planes(plane_axes, plane_features, coordinates, mode='bilinear', padding_mode='zeros', box_warp=None):
+    assert padding_mode == 'zeros'
+    N, n_planes, C, H, W = plane_features.shape
+    _, M, _ = coordinates.shape
+    plane_features = plane_features.view(N*n_planes, C, H, W)
+    
+    # import pdb; pdb.set_trace()
+
+    coordinates = (2/box_warp) * coordinates # TODO: add specific box bounds
+    
+    projected_coordinates = project_onto_planes(plane_axes, coordinates).unsqueeze(1)
+    output_features = grid_sample_gradfix.grid_sample(plane_features, projected_coordinates.float()).permute(0, 3, 2, 1).reshape(N, n_planes, M, C)
+    return output_features
 
 class VoxelSDFRenderer(nn.Module):
     def __init__(self, opt, xyz_min, xyz_max, style_dim=256, mode='train'):
@@ -244,6 +305,47 @@ class VoxelSDFRenderer(nn.Module):
 
         return rgb, features, sdf, mask, xyz, eikonal_term
 
+class OSGDecoder(torch.nn.Module):
+    def __init__(self, n_features, options):
+        super().__init__()
+        self.hidden_dim = 64
+        # self.merge_feature = torch.nn.Sequential(
+        #     FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
+        #     torch.nn.Softplus(),
+        #     FullyConnectedLayer(self.hidden_dim, 1 + options['decoder_output_dim'], lr_multiplier=options['decoder_lr_mul'])
+        # )
+
+        self.net = torch.nn.Sequential(
+            FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
+            torch.nn.Softplus(),
+            FullyConnectedLayer(self.hidden_dim,self.hidden_dim, lr_multiplier=options['decoder_lr_mul'])
+        )
+        self.act = torch.nn.Softplus()
+        self.sdf_layer =  LinearLayer(self.hidden_dim, 1, freq_init=True)
+        self.feature_layer = LinearLayer(self.hidden_dim, options['decoder_output_dim'], freq_init=True)
+
+    def forward(self, sampled_features, ray_directions):
+        # Aggregate features
+        # sampled_features = sampled_features.mean(1)
+        x = sampled_features
+
+        N, M, C = x.shape
+        x = x.view(N*M, C)
+
+        x = self.net(x)
+        x = self.act(x)
+        
+        sdf  = self.sdf_layer(x)
+        rgb = self.feature_layer(x)
+
+        # rgb = torch.sigmoid(rgb)*(1 + 2*0.001) - 0.001
+        
+        rgb = rgb.view(N, M, -1)
+        sdf = sdf.view(N, M, -1)
+        # print(rgb.mean(dim=1))
+        outputs = torch.cat([rgb, sdf], -1)
+
+        return outputs
 
 class VoxelHuman(nn.Module):
     def __init__(self, opt, smpl_cfgs, style_dim, out_im_res=(128, 64), mode='train'):
@@ -302,6 +404,9 @@ class VoxelHuman(nn.Module):
 
         self.smpl_seg = self.smpl_model.lbs_weights.argmax(-1)
         self.voxind2voxlist = {}
+
+
+
         # import pdb; pdb.set_trace()
         # for j in range(num_joints):
         #     # pj = parents[j]
@@ -398,8 +503,10 @@ class VoxelHuman(nn.Module):
         verts, faces, aux = load_obj(template_path)
         uvfaces = faces.textures_idx[None,...] 
         faces = faces.verts_idx[None,...]
+        self.register_buffer('faces', faces)
+        self.faces.requires_grad=False
         uvcoords = aux.verts_uvs[None,...]*2-1 
-        
+        # import pdb; pdb.set_trace()
         vertics_uv_position = torch.zeros_like(verts)[:,0:2]
         # import pdb; pdb.set_trace()
         vertics_uv_position[faces[0]] = uvcoords[0,uvfaces[0]]
@@ -407,7 +514,23 @@ class VoxelHuman(nn.Module):
         vertics_uv_position = vertics_uv_position[:,0:2]
 
         self.uvcoords = vertics_uv_position
+        # print(self.uvcoords.max())
+        # print(self.uvcoords.min())
+        mapping_kwargs=dnnlib.EasyDict()
+        mapping_kwargs.num_layers =2
 
+        self.cos = nn.CosineSimilarity(dim=2, eps=1e-6)
+        # G_kwargs = dnnlib.EasyDict(z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
+
+        self.backbone = StyleGAN2Backbone(512, 0, 512, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs)
+
+        self.plane_axes = generate_planes()
+        self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
+    def get_eikonal_term(self, pts, sdf):
+        eikonal_term = autograd.grad(outputs=sdf, inputs=pts,
+                                     grad_outputs=torch.ones_like(sdf),
+                                     create_graph=True)[0]
+                                    
     def compute_actual_bbox(self, beta):
         actual_vox_bbox = []
         init_J = get_J(beta.reshape(1, 10), self.smpl_model)
@@ -607,6 +730,9 @@ class VoxelHuman(nn.Module):
 
     def sample_ray(self, beta, theta, trans, rays_o, rays_d, K=3):
         # import pdb; pdb.set_trace()
+        
+
+
         _theta = theta.reshape(1, 24, 3, 3)
         so = self.smpl_model(betas = beta.reshape(1, 10), body_pose = _theta[:, 1:], global_orient = _theta[:, 0].view(1, 1, 3, 3))
         smpl_v = so['vertices'].clone().reshape(-1, 3)
@@ -614,6 +740,11 @@ class VoxelHuman(nn.Module):
         # import pdb; pdb.set_trace()
         del so
         global_smplv = smpl_v+trans
+
+        mesh_this = Meshes(verts=global_smplv.unsqueeze(0),faces=self.faces.expand(1,-1,-1))
+
+        global_smplv_norm = torch.stack(mesh_this.verts_normals_list())
+
         init_J = get_J(beta.reshape(1, 10), self.smpl_model)
         # first sample ray pts for each voxel
         rays_pts_local_list = []
@@ -695,6 +826,11 @@ class VoxelHuman(nn.Module):
         smpl_v_inv = torch.matmul(self.smpl_model.lbs_weights.reshape(-1, self.num_joints), rel_transforms.reshape(1, self.num_joints, 16)).reshape(-1, 4, 4)
         smpl_v_inv = torch.inverse(smpl_v_inv)
 
+        # cur_smpl_v = smpl_v + trans
+
+        
+
+        
         for i, cur_vox in enumerate(self.vox_list):
             # vox_i = self.vox_index[i]
             # cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
@@ -705,6 +841,7 @@ class VoxelHuman(nn.Module):
 
             ### extract current related smpl vertices
             # cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
+            # cur_smpl_v = smpl_v + trans
             cur_smpl_v = smpl_v + trans
             cur_blend_weights = self.smpl_model.lbs_weights.reshape(-1, self.num_joints)
             # import pdb; pdb.set_trace()
@@ -712,14 +849,62 @@ class VoxelHuman(nn.Module):
             flat_rays_pts_global = rays_pts_global[~valid_mask_outbbox_list[i]].reshape(1, -1, 3)
             flat_rays_d_pts_global = rays_d_per_pts[~valid_mask_outbbox_list[i]].reshape(1, -1, 3)
             # flat_rays_pts_global = torch.cat([cur_smpl_v.reshape(1, -1, 3), flat_rays_pts_global], 1)
-            nn = knn_points(flat_rays_pts_global, cur_smpl_v.reshape(1, -1, 3), K=K)
+            # nn = knn_points(flat_rays_pts_global.reshape(1, -1, 3), cur_smpl_v.reshape(1, -1, 3), K=K)
 
+            
+            numb_points = flat_rays_pts_global.shape[1]
+            verts_packed = mesh_this.verts_packed()
+            faces_packed = mesh_this.faces_packed()
+            tris = verts_packed[faces_packed]
+            tris_first_idx = mesh_this.mesh_to_faces_packed_first_idx()
+            max_tris = mesh_this.num_faces_per_mesh().max().item()
+            points_first_idx = tris_first_idx
+            min_triangle_area = 5e-3
+            
+            flat_rays_pts_global = flat_rays_pts_global.view(numb_points,3)
 
+            dists, idxs = _C.point_face_dist_forward(flat_rays_pts_global,points_first_idx,tris,tris_first_idx,numb_points,min_triangle_area)
+            
+
+            face_verts  = tris[idxs]
+
+            points = flat_rays_pts_global
+            
+            v0, v1, v2 = face_verts[:, 0], face_verts[:, 1], face_verts[:, 2]
+
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            
+
+            normal = torch.cross(edge1, edge2, dim=1)
+            normal = normal/normal.norm(dim=1, p=2).unsqueeze(-1)
+
+            distance =((points - v0)*normal).sum(dim=1).unsqueeze(-1)
+            
+            # distance = torch.abs(distance)
+            import pdb; pdb.set_trace()
+
+            projected_point = points - distance * normal
+            
+            another3 = projected_point - v0
+
+            another3 =  points - distance * normal - v0
+
+            torch.abs(points - distance * normal - v0).mean()
+            torch.abs(points - torch.abs(distance) * normal - v0).mean()
+
+            area_all = torch.cross(v1 - v0, v2 - v0).norm(dim=1, p=2)
+            area1 = torch.cross(v2 - projected_point, v0 - projected_point).norm(dim=1, p=2)
+            area2 = torch.cross(v0 - projected_point, v1 - projected_point).norm(dim=1, p=2)
+            
+
+            
             ### calculate interpolation weights #TODO: pamir has a better version
-            interp_weights = 1 / nn.dists.reshape(1, -1, K, 1, 1)
+            interp_weights = 1 / (nn.dists**0.5).reshape(1, -1, K, 1, 1)
             interp_weights[torch.where(torch.isinf(interp_weights))] = 100086
             interp_weights = interp_weights / interp_weights.sum(-3, keepdim=True)
-
+            
+            # import pdb; pdb.set_trace()
 
             ### pamir inverse transformation
             ## BUG!!!!!
@@ -740,6 +925,24 @@ class VoxelHuman(nn.Module):
             gather_uv = (gather_uv * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 2)
             # import pdb; pdb.set_trace()
             the_distance = ((nn.dists**0.5)*interp_weights.squeeze(-1).squeeze(-1)).sum(-1).reshape(1, -1, 1)
+            
+
+            gather_nearest_point= torch.gather(cur_smpl_v.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
+            gather_nearest_point = (gather_nearest_point * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
+
+            all_direction = flat_rays_pts_global-gather_nearest_point
+
+            gather_nearest_normal= torch.gather( global_smplv_norm.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
+            gather_nearest_normal = (gather_nearest_normal * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
+
+
+            cos_sim_dirction = self.cos(all_direction,gather_nearest_normal).unsqueeze(-1)
+            cos_sim_dirction[cos_sim_dirction>0]=1
+            cos_sim_dirction[cos_sim_dirction<0]=-1
+            
+            the_distance = the_distance*cos_sim_dirction
+
+            # import pdb; pdb.set_trace()
             # gather_uv = gather_uv[:,:,0,:]
             # cur_shape_transforms = shape_transforms.reshape(-1, 4, 4)
             # per_point_forward_transformation = torch.matmul(per_point_transformation, cur_shape_transforms)
@@ -764,7 +967,7 @@ class VoxelHuman(nn.Module):
             
 
 
-            rays_pts_uvd = torch.cat([the_distance,gather_uv],dim=2)
+            rays_pts_uvd = torch.cat([gather_uv,the_distance],dim=2)
 
 
             # import pdb; pdb.set_trace()
@@ -1014,8 +1217,10 @@ class VoxelHuman(nn.Module):
             sdf[mask] = 1
         return sdf.view(resolution, resolution, resolution)
 
-    def forward(self, cam_poses, focals, beta, theta, trans, styles=None, return_eikonal=False, no_white_bg=False, fix_viewdir=False, w_space=False, gamma_list=None, beta_list=None):
+    def forward(self, cam_poses, focals, beta, theta, trans, styles=None, return_eikonal=False, no_white_bg=False, fix_viewdir=False, w_space=False, gamma_list=None, beta_list=None,truncation=1):
         # import pdb; pdb.set_trace()
+        self.plane_axes = self.plane_axes.to(styles.device)
+
         batch_size = cam_poses.shape[0]
         beta = beta[:1]
         theta = theta[:1]
@@ -1076,6 +1281,11 @@ class VoxelHuman(nn.Module):
         raw_template = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 4)
         normal = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 3)
         counter = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1)
+        
+        styles = self.backbone.mapping(styles,None,truncation_psi = truncation)
+        planes = self.backbone.synthesis(styles)
+        planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
+        # planes = torch.tanh(planes)
 
         for i in range(len(self.vox_list)):
             cur_mask = ~valid_mask_outbbox_list[i]
@@ -1107,29 +1317,43 @@ class VoxelHuman(nn.Module):
             window_alpha = 4; window_beta = 8
             cur_xyz = (cur_xyz - (self.vox_list[i].xyz_min + self.vox_list[i].xyz_max) / 2.) / (self.vox_list[i].xyz_max - self.vox_list[i].xyz_min)
             weights = torch.exp(-window_alpha * ((cur_xyz * 2) ** window_beta).sum(-1))
+            weights = torch.ones_like(weights)
+            # print(weights.shape)
+            # import pdb; pdb.set_trace()
             if return_eikonal:
                 cur_xyz.requires_grad = True
-            if self.opt.input_ch_views == 3:
-                cur_input = torch.cat([
-                    cur_uvd.view(batch_size, -1, 3),
-                    cur_rays_d.view(batch_size, -1, 3)
-                ], -1)
-            elif self.opt.input_ch_views == 0:
-                # raise NotImplementedError
-                cur_input = cur_uvd.view(batch_size, -1, 3)
-            else:
-                raise NotImplementedError
-            
-            if w_space:
-                assert gamma_list is not None
-                assert beta_list is not None
-                tmp_output = self.vox_list[i].network.forward_with_gamma_beta(
-                    cur_input, gamma_list[i], beta_list[i]
-                ).view(-1, 4)
-            else:
-                tmp_output = self.vox_list[i].network(
-                    cur_input, styles=styles
-                ).view(-1, 4)
+                cur_uvd.requires_grad = True
+
+            # if self.opt.input_ch_views == 3:
+            #     cur_input = torch.cat([
+            #         cur_uvd.view(batch_size, -1, 3),
+            #         cur_rays_d.view(batch_size, -1, 3)
+            #     ], -1)
+            # elif self.opt.input_ch_views == 0:
+            #     # raise NotImplementedError
+            #     cur_input = cur_uvd.view(batch_size, -1, 3)
+            # else:
+            #     raise NotImplementedError
+            # import pdb; pdb.set_trace()
+            cur_input = cur_uvd.view(batch_size, -1, 3)
+            # print(cur_input.max(dim=1)[0])
+            # print(cur_input.min(dim=1)[0])
+            # if w_space:
+            #     assert gamma_list is not None
+            #     assert beta_list is not None
+            #     tmp_output = self.vox_list[i].network.forward_with_gamma_beta(
+            #         cur_input, gamma_list[i], beta_list[i]
+            #     ).view(-1, 4)
+            # else:
+            #     tmp_output = self.vox_list[i].network(
+            #         cur_input, styles=styles
+            #     ).view(-1, 4)
+            # # 在这里搞 triplane
+            sampled_features = sample_from_planes(self.plane_axes, planes, cur_input, padding_mode='zeros', box_warp=2)
+            sampled_features = sampled_features.mean(1)
+            # import pdb; pdb.set_trace()
+            tmp_output = self.decoder(sampled_features,None).view(-1, 4)
+            # tmp_output[:, -1:] = 0
             actual_sdf_list.append(tmp_output[:, -1:].view(-1).clone())
             tmp_output[:, -1:] = tmp_output[:, -1:] + template_sdf
 
@@ -1144,18 +1368,18 @@ class VoxelHuman(nn.Module):
 
             if return_eikonal:
                 eikonal_term = self.vox_list[i].get_eikonal_term(
-                    cur_xyz, tmp_output[..., -1]
+                    cur_uvd, tmp_output[..., -1]
                 )
                 eikonal_term_list.append(eikonal_term)
-                normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)
-                normal_tmp[cur_new_mask] = eikonal_term * weights.view(-1, 1)
-                try:
-                    if torch.any(cur_mask):
-                        normal_tmp = torch.matmul(forward_skinning_T_list[i][..., :3, :3].reshape(-1, 3, 3), normal_tmp.reshape(-1, 3).unsqueeze(-1))[..., 0].view(-1, self.N_samples, 3)
-                        normal[cur_mask] += normal_tmp.view(-1, self.N_samples, 3)
-                except Exception as e:
-                    print(e)
-                    st()
+                # normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)
+                # normal_tmp[cur_new_mask] = eikonal_term * weights.view(-1, 1)
+                # try:
+                #     if torch.any(cur_mask):
+                #         normal_tmp = torch.matmul(forward_skinning_T_list[i][..., :3, :3].reshape(-1, 3, 3), normal_tmp.reshape(-1, 3).unsqueeze(-1))[..., 0].view(-1, self.N_samples, 3)
+                #         normal[cur_mask] += normal_tmp.view(-1, self.N_samples, 3)
+                # except Exception as e:
+                #     print(e)
+                #     st()
 
         sdf = raw[..., -1]
         sdf[counter.squeeze(-1) == 0] = 1
@@ -1249,5 +1473,243 @@ class VoxelHuman(nn.Module):
 
         rgb_map = -1 + 2 * rgb_map
         sdf = torch.cat(actual_sdf_list, 0)
-
+        
         return rgb_map, feature_map, [sdf], mask, [xyz, depth, depth_template, mask_template], cat_eikonal_term
+
+    # def forward(self, cam_poses, focals, beta, theta, trans, styles=None, return_eikonal=False, no_white_bg=False, fix_viewdir=False, w_space=False, gamma_list=None, beta_list=None):
+    #     # import pdb; pdb.set_trace()
+    #     batch_size = cam_poses.shape[0]
+    #     beta = beta[:1]
+    #     theta = theta[:1]
+    #     trans = trans[:1]
+    #     rays_num = self.out_im_res[0] * self.out_im_res[1]
+    #     rays_o, rays_d, viewdirs = self.get_rays(focals, cam_poses)
+    #     rays_o = rays_o.reshape(batch_size, -1, 3)
+    #     rays_d = rays_d.reshape(batch_size, -1, 3)
+    #     viewdirs = viewdirs.reshape(-1, 3)
+    #     theta_rodrigues = batch_rodrigues(theta.reshape(-1, 3)).reshape(1, 24, 3, 3)
+    #     rays_pts_local_list,rays_pts_uvd_list, rays_pts_global, mask_outbbox_list, valid_mask_outbbox_list, \
+    #     mask_outbbox, forward_skinning_T_list, z_vals, rays_d_pts_local_list, \
+    #     bbox_transformation_list, smpl_v, actual_vox_bbox = \
+    #         self.sample_ray(
+    #             beta, theta_rodrigues, trans, rays_o[0], rays_d[0]
+    #         )
+        
+        
+
+    #     rays_o = rays_o.reshape(-1, 3)
+    #     rays_d = rays_d.reshape(-1, 3)
+
+    #     valid_rays_num = rays_pts_global.shape[0]
+
+    #     rays_pts_local_list = [
+    #         data.repeat(batch_size, 1, 1) for data in rays_pts_local_list
+    #     ]
+    #     rays_pts_uvd_list = [
+    #         data.repeat(batch_size, 1, 1) for data in rays_pts_uvd_list
+    #     ]
+    #     rays_d_pts_local_list = [
+    #         data.repeat(batch_size, 1, 1) for data in rays_d_pts_local_list
+    #     ]
+    #     rays_pts_global = rays_pts_global.repeat(batch_size, 1, 1)
+    #     mask_outbbox_list = [
+    #         data.repeat(batch_size) for data in mask_outbbox_list
+    #     ]
+    #     valid_mask_outbbox_list = [
+    #         data.repeat(batch_size) for data in valid_mask_outbbox_list
+    #     ]
+    #     mask_outbbox = mask_outbbox.repeat(batch_size)
+    #     forward_skinning_T_list = [
+    #         data.repeat(batch_size, 1, 1, 1) for data in forward_skinning_T_list
+    #     ]
+    #     z_vals = z_vals.repeat(batch_size, 1)
+        
+    #     eikonal_term_list = []
+    #     actual_sdf_list = []
+        
+    #     dists = (z_vals[..., 1:] - z_vals[..., :-1]).reshape(batch_size, valid_rays_num, -1)
+    #     rays_d_norm = torch.norm(rays_d, dim=-1).unsqueeze(-1).reshape(batch_size * rays_num, 1)
+    #     valid_rays_d_norm = rays_d_norm[~mask_outbbox].reshape(batch_size, valid_rays_num, 1)
+    #     # dists = torch.cat([dists, self.inf.expand(valid_rays_d_norm.shape)], -1)
+    #     dists = torch.cat([dists, dists[..., -1:]], -1)
+
+        
+    #     raw = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 4)
+    #     raw_template = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 4)
+    #     normal = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1).repeat(1, 1, 3)
+    #     counter = torch.zeros_like(rays_pts_global[..., 0]).unsqueeze(-1)
+
+    #     for i in range(len(self.vox_list)):
+    #         cur_mask = ~valid_mask_outbbox_list[i]
+    #         _cur_xyz = rays_pts_local_list[i][cur_mask].view(-1, 3)
+    #         _cur_uvd = rays_pts_uvd_list[i][cur_mask].view(-1, 3)
+    #         _cur_rays_d = rays_d_pts_local_list[i][cur_mask].view(-1, 3)
+
+    #         ### mask out points outside the original bbox ###
+    #         cur_xyz_min = self.vox_list[i].xyz_min
+    #         cur_xyz_max = self.vox_list[i].xyz_max
+    #         cur_new_mask = (_cur_xyz <= cur_xyz_max).sum(-1) + (_cur_xyz >= cur_xyz_min).sum(-1)
+    #         cur_new_mask = (cur_new_mask == 6)
+    #         cur_xyz = _cur_xyz[cur_new_mask]
+    #         cur_uvd = _cur_uvd[cur_new_mask]
+    #         cur_rays_d = _cur_rays_d[cur_new_mask]
+    #         if fix_viewdir:
+    #             cur_rays_d = torch.zeros_like(cur_rays_d)
+    #             cur_rays_d[..., -1] = -1
+    #         tmp_raw = torch.zeros_like(raw[cur_mask]).view(-1, 4)
+    #         tmp_raw_template = torch.zeros_like(raw[cur_mask]).view(-1, 4)
+    #         tmp_counter = torch.zeros_like(raw[cur_mask][..., 0]).view(-1)
+    #         #################################################
+
+    #         template_sdf = torch.nn.functional.grid_sample(
+    #             self.sdf_voxels, cur_xyz.reshape(1, 1, 1, -1, 3) / 1.3,
+    #             padding_mode = 'border', align_corners = True
+    #         ).reshape(-1, 1)
+
+    #         window_alpha = 4; window_beta = 8
+    #         cur_xyz = (cur_xyz - (self.vox_list[i].xyz_min + self.vox_list[i].xyz_max) / 2.) / (self.vox_list[i].xyz_max - self.vox_list[i].xyz_min)
+    #         weights = torch.exp(-window_alpha * ((cur_xyz * 2) ** window_beta).sum(-1))
+    #         if return_eikonal:
+    #             cur_xyz.requires_grad = True
+    #         if self.opt.input_ch_views == 3:
+    #             cur_input = torch.cat([
+    #                 cur_uvd.view(batch_size, -1, 3),
+    #                 cur_rays_d.view(batch_size, -1, 3)
+    #             ], -1)
+    #         elif self.opt.input_ch_views == 0:
+    #             # raise NotImplementedError
+    #             cur_input = cur_uvd.view(batch_size, -1, 3)
+    #         else:
+    #             raise NotImplementedError
+            
+    #         if w_space:
+    #             assert gamma_list is not None
+    #             assert beta_list is not None
+    #             tmp_output = self.vox_list[i].network.forward_with_gamma_beta(
+    #                 cur_input, gamma_list[i], beta_list[i]
+    #             ).view(-1, 4)
+    #         else:
+    #             tmp_output = self.vox_list[i].network(
+    #                 cur_input, styles=styles
+    #             ).view(-1, 4)
+    #         actual_sdf_list.append(tmp_output[:, -1:].view(-1).clone())
+    #         tmp_output[:, -1:] = tmp_output[:, -1:] + template_sdf
+
+    #         tmp_raw[cur_new_mask] = tmp_output * weights.view(-1, 1)
+    #         tmp_raw_template[cur_new_mask] = template_sdf * weights.view(-1, 1)
+    #         tmp_counter[cur_new_mask] += weights.view(-1)
+
+    #         raw[cur_mask] += tmp_raw.view(-1, self.N_samples, 4)
+    #         raw_template[cur_mask] += tmp_raw_template.view(-1, self.N_samples, 4)
+    #         counter[cur_mask] += tmp_counter.view(-1, self.N_samples, 1)
+
+
+    #         if return_eikonal:
+    #             eikonal_term = self.vox_list[i].get_eikonal_term(
+    #                 cur_xyz, tmp_output[..., -1]
+    #             )
+    #             eikonal_term_list.append(eikonal_term)
+    #             normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)
+    #             normal_tmp[cur_new_mask] = eikonal_term * weights.view(-1, 1)
+    #             try:
+    #                 if torch.any(cur_mask):
+    #                     normal_tmp = torch.matmul(forward_skinning_T_list[i][..., :3, :3].reshape(-1, 3, 3), normal_tmp.reshape(-1, 3).unsqueeze(-1))[..., 0].view(-1, self.N_samples, 3)
+    #                     normal[cur_mask] += normal_tmp.view(-1, self.N_samples, 3)
+    #             except Exception as e:
+    #                 print(e)
+    #                 st()
+
+    #     sdf = raw[..., -1]
+    #     sdf[counter.squeeze(-1) == 0] = 1
+    #     raw[..., -1] = sdf
+        
+    #     sdf_template = raw_template[..., -1]
+    #     sdf_template[counter.squeeze(-1) == 0] = 1
+    #     raw_template[..., -1] = sdf_template
+
+    #     counter[torch.isclose(counter, torch.zeros_like(counter).cuda())] = 1
+        
+    #     raw = raw / counter
+
+    #     raw_template = raw_template / counter
+
+    #     normal = normal / counter
+
+    #     # Render All
+    #     if self.with_sdf:
+    #         sigma = self.sdf_activation(-raw[..., -1].view(batch_size, valid_rays_num, -1))
+    #         sigma = 1 - torch.exp(-sigma * dists)
+    #         sigma_template = self.sdf_activation(-raw_template[..., -1].view(batch_size, valid_rays_num, -1))
+    #         sigma_template = 1 - torch.exp(-sigma_template * dists)
+    #     else:
+    #         raise NotImplementedError
+
+    #     visibility = torch.cumprod(torch.cat([torch.ones_like(torch.index_select(sigma, 2, self.zero_idx)), 1.-sigma + 1e-10], 2), 2)
+    #     visibility = visibility[...,:-1]
+    #     _weights = sigma * visibility
+
+    #     visibility_template = torch.cumprod(torch.cat([torch.ones_like(torch.index_select(sigma_template, 2, self.zero_idx)), 1.-sigma_template + 1e-10], 2), 2)
+    #     visibility_template = visibility_template[...,:-1]
+    #     _weights_template = sigma_template * visibility_template
+
+    #     _rgb_map = torch.sum(_weights.unsqueeze(-1) * torch.sigmoid(raw[..., :3].view(batch_size, valid_rays_num, -1, 3)), 2)
+    #     _xyz_map = torch.sum(_weights.unsqueeze(-1) * rays_pts_global.view(batch_size, valid_rays_num, -1, 3), 2)
+    #     _depth_map = torch.sum(_weights * z_vals.view(batch_size, valid_rays_num, -1), -1)
+    #     _depth_map_template = torch.sum(_weights_template * z_vals.view(batch_size, valid_rays_num, -1), -1)
+    #     _weights_map = _weights.sum(dim=-1, keepdim=True)
+    #     _weights_map_template = _weights_template.sum(dim=-1, keepdim=True)
+            
+    #     if return_eikonal:
+    #         normal = torch.sum(_weights.unsqueeze(-1) * normal.view(batch_size, valid_rays_num, -1, 3), 2)
+
+    #     if return_eikonal:
+    #         cat_eikonal_term = torch.cat(eikonal_term_list, -2)
+    #     else:
+    #         cat_eikonal_term = None
+
+    #     if self.opt.white_bg and not no_white_bg:
+    #         _rgb_map = _rgb_map + 1 - _weights_map.view(batch_size, valid_rays_num, 1) 
+
+
+    #     H, W = self.out_im_res
+
+    #     rgb_map = torch.zeros(batch_size * H * W, 3).to(_rgb_map.device)
+    #     if self.opt.white_bg and not no_white_bg:
+    #         rgb_map += 1
+    #     rgb_map[~mask_outbbox] = _rgb_map.view(-1, 3)
+    #     rgb_map = rgb_map.view(batch_size, H, W, 3)
+
+    #     xyz_map = torch.zeros(batch_size * H * W, 3).to(_xyz_map.device)
+    #     xyz_map[~mask_outbbox] = _xyz_map.view(-1, 3)
+    #     xyz = xyz_map.view(batch_size, H, W, 3)
+
+    #     depth_map = torch.zeros(batch_size * H * W, 1).to(_depth_map.device) + _depth_map.max()
+    #     depth_map[~mask_outbbox] = _depth_map.view(-1, 1)
+    #     depth = depth_map.view(batch_size, H, W)
+        
+    #     depth_map_template = torch.zeros(batch_size * H * W, 1).to(_depth_map_template.device) + _depth_map_template.max()
+    #     depth_map_template[~mask_outbbox] = _depth_map_template.view(-1, 1)
+    #     depth_template = depth_map_template.view(batch_size, H, W)
+
+    #     weights_map = torch.zeros(batch_size * H * W, 1).to(_weights_map.device)
+    #     weights_map[~mask_outbbox] = _weights_map.view(-1, 1)
+    #     mask = weights_map.view(batch_size, H, W)
+
+    #     weights_map_template = torch.zeros(batch_size * H * W, 1).to(_weights_map_template.device)
+    #     weights_map_template[~mask_outbbox] = _weights_map_template.view(-1, 1)
+    #     mask_template = weights_map_template.view(batch_size, H, W)
+
+    #     if return_eikonal:
+    #         normal_map = torch.zeros(batch_size * H * W, 3).to(normal.device)
+    #         normal_map[~mask_outbbox] = normal.view(-1, 3)
+    #         feature_map = normal_map.view(batch_size, H, W, 3)
+    #     else:
+    #         feature_map = None
+
+    #     if torch.any(torch.isnan(rgb_map)):
+    #         st()
+
+    #     rgb_map = -1 + 2 * rgb_map
+    #     sdf = torch.cat(actual_sdf_list, 0)
+
+    #     return rgb_map, feature_map, [sdf], mask, [xyz, depth, depth_template, mask_template], cat_eikonal_term

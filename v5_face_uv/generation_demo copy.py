@@ -129,7 +129,7 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
                 g_ema.zero_grad()
                 img_list.append(rgb_images_thumbs)
         ##################################
-        continue
+        # continue
         latent = g_ema.styles_and_noise_forward(sample_z[:1], None, opt.truncation_ratio,
                                                 mean_latent, False)
 
@@ -225,10 +225,6 @@ if __name__ == "__main__":
                                     'models_{}.pt'.format(opt.experiment.ckpt.zfill(7)))
     # define results directory name
     result_model_dir = 'iter_{}'.format(opt.experiment.ckpt.zfill(7))
-    # import pdb; pdb.set_trace()
-    if opt.experiment.load_path is not None:
-        checkpoint_path = opt.experiment.load_path
-    
 
     # create results directory
     results_dir_basename = os.path.join(opt.inference.results_dir, opt.experiment.expname)
@@ -237,18 +233,14 @@ if __name__ == "__main__":
         opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'fixed_angles')
     else:
         opt.inference.results_dst_dir = os.path.join(opt.inference.results_dst_dir, 'random_angles')
-    if opt.experiment.load_path is not None:
-        opt.inference.results_dst_dir = os.path.join(results_dir_basename, os.path.basename(opt.experiment.load_path).split('.')[0])
     os.makedirs(opt.inference.results_dst_dir, exist_ok=True)
-
     if not opt.rendering.render_video:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_fig'), exist_ok=True)
     else:
         os.makedirs(os.path.join(opt.inference.results_dst_dir, 'images_paper_video'), exist_ok=True)
     os.makedirs(os.path.join(opt.inference.results_dst_dir, 'marching_cubes_meshes_posed'), exist_ok=True)
-
     checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
-    
+
     # load generation model
     g_ema = Generator(opt.model, opt.rendering, full_pipeline=False, voxhuman_name=opt.model.voxhuman_name).to(device)
     pretrained_weights_dict = checkpoint["g_ema"]
