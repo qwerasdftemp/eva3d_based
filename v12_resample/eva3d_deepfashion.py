@@ -468,23 +468,26 @@ class VoxelHuman(nn.Module):
                 self.voxind2voxlist[1] = len(self.vox_list) - 1
                 self.voxind2voxlist[2] = len(self.vox_list) - 1
         
-        # all_xyz_min = []
-        # all_xyz_max = []
-        # for j in range(num_joints):
-        #     xyz_min, xyz_max, cur_index = self.predefined_bbox(j)
-        #     if xyz_min is None:
-        #         continue
-        #     xyz_min -= np.array([0.035, 0.035, 0.035])
-        #     xyz_max += np.array([0.035, 0.035, 0.035])
+        all_xyz_min = []
+        all_xyz_max = []
+        for j in range(num_joints):
+            xyz_min, xyz_max, cur_index = self.predefined_bbox(j)
+            if xyz_min is None:
+                continue
+            xyz_min -= np.array([0.035, 0.035, 0.035])
+            xyz_max += np.array([0.035, 0.035, 0.035])
 
-        #     all_xyz_min.append(xyz_min)
-        #     all_xyz_max.append(xyz_max)
+            all_xyz_min.append(xyz_min)
+            all_xyz_max.append(xyz_max)
         
-        # all_xyz_min = torch.tensor(all_xyz_min)
-        # xyz_min = all_xyz_min.min(dim=0)[0].numpy()
+        all_xyz_min = torch.tensor(all_xyz_min)
+        xyz_min = all_xyz_min.min(dim=0)[0].numpy()
 
-        # all_xyz_max = torch.tensor(all_xyz_max)
-        # xyz_max = all_xyz_max.max(dim=0)[0].numpy()
+        all_xyz_max = torch.tensor(all_xyz_max)
+        xyz_max = all_xyz_max.max(dim=0)[0].numpy()
+        
+        self.all_xyz_min = torch.from_numpy(xyz_min).float().cuda()
+        self.all_xyz_max = torch.from_numpy(xyz_max).float().cuda()
         # new_opt = opt.copy()
         # new_opt.depth = 4
         # new_opt.width = 128
@@ -832,10 +835,14 @@ class VoxelHuman(nn.Module):
 
         # cur_smpl_v = smpl_v + trans
 
+        # import pdb; pdb.set_trace()
+        # valid_mask_outbbox_list[0] = mask_outbbox
+        for i, cur_vox in enumerate(self.vox_list):
+            if i==0:
+                continue
+            valid_mask_outbbox_list[0] = valid_mask_outbbox_list[0] | valid_mask_outbbox_list[i]
         
-        valid_mask_outbbox_list[0] = mask_outbbox
-        
-        for i, cur_vox in enumerate(1):
+        for i, cur_vox in enumerate([0]):
             # vox_i = self.vox_index[i]
             # cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
 
@@ -1294,10 +1301,21 @@ class VoxelHuman(nn.Module):
             _cur_rays_d = rays_d_pts_local_list[i][cur_mask].view(-1, 3)
 
             ### mask out points outside the original bbox ###
-            cur_xyz_min = self.vox_list[i].xyz_min
-            cur_xyz_max = self.vox_list[i].xyz_max
-            cur_new_mask = (_cur_xyz <= cur_xyz_max).sum(-1) + (_cur_xyz >= cur_xyz_min).sum(-1)
-            cur_new_mask = (cur_new_mask == 6)
+            # cur_xyz_min = self.vox_list[i].xyz_min
+            # cur_xyz_max = self.vox_list[i].xyz_max
+            cur_new_mask = torch.zeros_like(_cur_xyz[:,0]).bool()
+            # import pdb; pdb.set_trace()
+            for i in range(len(self.vox_list)):
+                cur_xyz_min = self.vox_list[i].xyz_min
+                cur_xyz_max = self.vox_list[i].xyz_max
+                # cur_xyz_min = self.all_xyz_min 
+                # cur_xyz_max = self.all_xyz_max 
+                temp_mask = (_cur_xyz <= cur_xyz_max).sum(-1) + (_cur_xyz >= cur_xyz_min).sum(-1)
+                temp_mask = (temp_mask == 6)
+                cur_new_mask = cur_new_mask | temp_mask
+                
+            
+            
             cur_xyz = _cur_xyz[cur_new_mask]
             cur_uvd = _cur_uvd[cur_new_mask]
             # cur_new_mask__for
