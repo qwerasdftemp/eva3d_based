@@ -833,9 +833,9 @@ class VoxelHuman(nn.Module):
         # cur_smpl_v = smpl_v + trans
 
         
-
+        valid_mask_outbbox_list[0] = mask_outbbox
         
-        for i, cur_vox in enumerate(self.vox_list):
+        for i, cur_vox in enumerate(1):
             # vox_i = self.vox_index[i]
             # cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
 
@@ -1286,7 +1286,7 @@ class VoxelHuman(nn.Module):
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
         # planes = torch.tanh(planes)
 
-        for i in range(len(self.vox_list)):
+        for i in range(1):
             cur_mask = ~valid_mask_outbbox_list[i]
             _cur_xyz = rays_pts_local_list[i][cur_mask].view(-1, 3)
             _cur_uvd = rays_pts_uvd_list[i][cur_mask].view(-1, 3)
