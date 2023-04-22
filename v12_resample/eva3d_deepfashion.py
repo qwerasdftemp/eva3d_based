@@ -833,7 +833,7 @@ class VoxelHuman(nn.Module):
         smpl_v_inv = torch.matmul(self.smpl_model.lbs_weights.reshape(-1, self.num_joints), rel_transforms.reshape(1, self.num_joints, 16)).reshape(-1, 4, 4)
         smpl_v_inv = torch.inverse(smpl_v_inv)
 
-        # cur_smpl_v = smpl_v + trans
+        # cur_smpl_v = smpl_v + trans fknn x zf
 
         # import pdb; pdb.set_trace()
         # valid_mask_outbbox_list[0] = mask_outbbox
