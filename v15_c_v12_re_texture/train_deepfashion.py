@@ -407,7 +407,7 @@ if __name__ == "__main__":
 
         generator.load_state_dict(ckpt["g"], strict=False)
         discriminator.load_state_dict(ckpt["d"], strict=True)
-        g_ema.load_state_dict(ckpt["g_ema"])
+        g_ema.load_state_dict(ckpt["g_ema"],strict=False)
         if "g_optim" in ckpt.keys():
             g_optim.load_state_dict(ckpt["g_optim"])
             d_optim.load_state_dict(ckpt["d_optim"])
