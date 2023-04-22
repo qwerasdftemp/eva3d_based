@@ -395,7 +395,22 @@ if __name__ == "__main__":
         if "g_optim" in ckpt.keys():
             g_optim.load_state_dict(ckpt["g_optim"])
             d_optim.load_state_dict(ckpt["d_optim"])
+    if opt.experiment.load_path is not None:
+        ckpt_path = checkpoint_path = opt.experiment.load_path
+        if get_rank() == 0:
+            print("load model:", ckpt_path)
+        ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        try:
+            opt.training.start_iter = int(opt.experiment.ckpt) + 1
+        except ValueError:
+            pass
 
+        generator.load_state_dict(ckpt["g"], strict=False)
+        discriminator.load_state_dict(ckpt["d"], strict=True)
+        g_ema.load_state_dict(ckpt["g_ema"])
+        if "g_optim" in ckpt.keys():
+            g_optim.load_state_dict(ckpt["g_optim"])
+            d_optim.load_state_dict(ckpt["d_optim"])
     #AugmentPipe
     if opt.training.small_aug:
         scale_std = 0.05
