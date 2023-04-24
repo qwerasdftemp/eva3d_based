@@ -782,9 +782,10 @@ class VoxelHuman(nn.Module):
             ### extract current related smpl vertices
             # cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
             # cur_smpl_v = smpl_v + trans
-            cur_smpl_v = smpl_v + trans
-            cur_blend_weights = self.smpl_model.lbs_weights.reshape(-1, self.num_joints)
-            # import pdb; pdb.set_trace()
+            cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
+            cur_blend_weights = self.smpl_model.lbs_weights[self.smpl_index[i], ...].reshape(-1, self.num_joints)
+
+
             ### knn rays_pts_global v.s. related smpl vertices
             flat_rays_pts_global = rays_pts_global[~valid_mask_outbbox_list[i]].reshape(1, -1, 3)
             flat_rays_d_pts_global = rays_d_per_pts[~valid_mask_outbbox_list[i]].reshape(1, -1, 3)
@@ -807,9 +808,12 @@ class VoxelHuman(nn.Module):
 
             ### new-way of calculating per-point inv transformation
             # per_point_transformation = torch.matmul(cur_blend_weights, rel_transforms.reshape(1, self.num_joints, 16)).reshape(-1, 4, 4)
-            per_point_inv_transformation = smpl_v_inv.reshape(-1, 4, 4)
+            # per_point_inv_transformation = smpl_v_inv.reshape(-1, 4, 4)
+            per_point_inv_transformation = smpl_v_inv[self.smpl_index[i], ...].reshape(-1, 4, 4)
 
-            cur_inv_shape_transforms = inv_shape_transforms.reshape(-1, 4, 4)
+            cur_inv_shape_transforms = inv_shape_transforms[self.smpl_index[i], ...].reshape(-1, 4, 4)
+            
+            # cur_inv_shape_transforms = inv_shape_transforms.reshape(-1, 4, 4)
             per_point_inv_transformation = torch.matmul(cur_inv_shape_transforms, per_point_inv_transformation)
             gather_inv_T = torch.gather(per_point_inv_transformation.reshape(1, -1, 1, 4, 4).repeat(1, 1, K, 1, 1), 1, nn.idx.reshape(1, -1, K, 1, 1).repeat(1, 1, 1, 4, 4))
             inv_T = (gather_inv_T * interp_weights).sum(-3).reshape(1, -1, 4, 4)
@@ -1323,7 +1327,7 @@ class VoxelHuman(nn.Module):
 
             if return_eikonal:
                 eikonal_term = self.vox_list[i].get_eikonal_term(
-                    cur_uvd, tmp_output[..., -1]
+                    cur_xyz, tmp_output[..., -1]
                 )
                 eikonal_term_list.append(eikonal_term)
                 # normal_tmp = torch.zeros_like(normal[cur_mask]).view(-1, 3)

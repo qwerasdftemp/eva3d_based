@@ -782,8 +782,8 @@ class VoxelHuman(nn.Module):
             ### extract current related smpl vertices
             # cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
             # cur_smpl_v = smpl_v + trans
-            cur_smpl_v = smpl_v + trans
-            cur_blend_weights = self.smpl_model.lbs_weights.reshape(-1, self.num_joints)
+            cur_smpl_v = smpl_v[self.smpl_index[i], ...] + trans
+            cur_blend_weights = self.smpl_model.lbs_weights[self.smpl_index[i], ...].reshape(-1, self.num_joints)
             # import pdb; pdb.set_trace()
             ### knn rays_pts_global v.s. related smpl vertices
             flat_rays_pts_global = rays_pts_global[~valid_mask_outbbox_list[i]].reshape(1, -1, 3)
