@@ -534,14 +534,14 @@ class VoxelHuman(nn.Module):
         self.cos = nn.CosineSimilarity(dim=-1, eps=1e-6)
         # G_kwargs = dnnlib.EasyDict(z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
 
-        self.backbone = StyleGAN2Backbone(512, 0, 512, img_resolution=512, img_channels=32*3, mapping_kwargs=mapping_kwargs)
+        # self.backbone = StyleGAN2Backbone(512, 0, 512, img_resolution=512, img_channels=32*3, mapping_kwargs=mapping_kwargs)
 
-        self.plane_axes = generate_planes()
-        self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
-        self.K_numb = 10
-        self.residual_part = SirenGenerator(D=3, W=128, style_dim=512, input_ch=3*self.K_numb,
-                                      output_ch=3, input_ch_views=False,
-                                      output_features=False)
+        # self.plane_axes = generate_planes()
+        # self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
+        self.K_numb = 3
+        # self.residual_part = SirenGenerator(D=3, W=128, style_dim=512, input_ch=3*self.K_numb,
+        #                               output_ch=3, input_ch_views=False,
+        #                               output_features=False)
     def get_eikonal_term(self, pts, sdf):
         eikonal_term = autograd.grad(outputs=sdf, inputs=pts,
                                      grad_outputs=torch.ones_like(sdf),
@@ -857,7 +857,7 @@ class VoxelHuman(nn.Module):
 
             _rays_pts_local = torch.zeros_like(rays_pts_global)
             _rays_pts_uvd = torch.zeros_like(rays_pts_global)
-            _K_rays_pts_uvd = torch.zeros_like(rays_pts_global.repeat(1,1,K))
+            # _K_rays_pts_uvd = torch.zeros_like(rays_pts_global.repeat(1,1,K))
 
             # _rays_pts_uvd = torch.zeros_like(rays_pts_global.)
             _rays_d_pts_local = torch.zeros_like(rays_pts_global)
@@ -899,33 +899,33 @@ class VoxelHuman(nn.Module):
             uvcoords = self.uvcoords.to(inv_T.device)
             gather_uv= torch.gather(uvcoords.reshape(1, -1, 1, 2).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 2))
             
-            K_gather_uv = gather_uv.reshape(1,-1,2*K)
+            # K_gather_uv = gather_uv.reshape(1,-1,2*K)
 
             
             gather_uv = (gather_uv * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 2)
             # import pdb; pdb.set_trace()
-            K_the_distance =  (nn.dists**0.5).reshape(1, -1, K)
+            # K_the_distance =  (nn.dists**0.5).reshape(1, -1, K)
 
             
             the_distance = ((nn.dists**0.5)*interp_weights.squeeze(-1).squeeze(-1)).sum(-1).reshape(1, -1, 1)
             
 
             gather_nearest_point= torch.gather(cur_smpl_v.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
-            k_gather_nearest_point = gather_nearest_point.view(-1,K,3)
+            # k_gather_nearest_point = gather_nearest_point.view(-1,K,3)
             # import pdb; pdb.set_trace()
-            K_direction = flat_rays_pts_global[0].unsqueeze(1)-k_gather_nearest_point
+            # K_direction = flat_rays_pts_global[0].unsqueeze(1)-k_gather_nearest_point
             
             gather_nearest_point = (gather_nearest_point * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
 
             all_direction = flat_rays_pts_global-gather_nearest_point
 
             gather_nearest_normal= torch.gather( global_smplv_norm.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
-            k_gather_nearest_normal = gather_nearest_normal[0]
-            k_cos_sim_dirction = self.cos(K_direction,k_gather_nearest_normal).unsqueeze(0)
+            # k_gather_nearest_normal = gather_nearest_normal[0]
+            # k_cos_sim_dirction = self.cos(K_direction,k_gather_nearest_normal).unsqueeze(0)
             
-            k_cos_sim_dirction[k_cos_sim_dirction>0]=1
+            # k_cos_sim_dirction[k_cos_sim_dirction>0]=1
             
-            k_cos_sim_dirction[k_cos_sim_dirction<0]=-1
+            # k_cos_sim_dirction[k_cos_sim_dirction<0]=-1
             
             gather_nearest_normal = (gather_nearest_normal * interp_weights.squeeze(-1)).sum(-2).reshape(1, -1, 3)
 
@@ -935,7 +935,7 @@ class VoxelHuman(nn.Module):
             cos_sim_dirction[cos_sim_dirction<0]=-1
             
             the_distance = the_distance*cos_sim_dirction
-            K_the_distance = k_cos_sim_dirction*K_the_distance
+            # K_the_distance = k_cos_sim_dirction*K_the_distance
             # import pdb; pdb.set_trace()
             # gather_uv = gather_uv[:,:,0,:]
             # cur_shape_transforms = shape_transforms.reshape(-1, 4, 4)
@@ -962,7 +962,7 @@ class VoxelHuman(nn.Module):
 
 
             rays_pts_uvd = torch.cat([gather_uv,the_distance],dim=2)
-            K_rays_pts_uvd = torch.cat([K_gather_uv,K_the_distance],dim=2)
+            # K_rays_pts_uvd = torch.cat([K_gather_uv,K_the_distance],dim=2)
             # import pdb; pdb.set_trace()
 
             # import pdb; pdb.set_trace()
@@ -981,16 +981,16 @@ class VoxelHuman(nn.Module):
 
             # import pdb; pdb.set_trace()
             # _K_rays_pts_uvd[~valid_mask_outbbox_list[i]] = K_rays_pts_uvd.view(-1, self.N_samples, 3*K)
-            K_rays_pts_uvd =  K_rays_pts_uvd.view(-1, self.N_samples, 3*K)
-            for this_k in range(K):
+            # K_rays_pts_uvd =  K_rays_pts_uvd.view(-1, self.N_samples, 3*K)
+            # for this_k in range(K):
                 
-                (_K_rays_pts_uvd[:,:,0*this_k:3*(this_k+1)])[~valid_mask_outbbox_list[i]] =K_rays_pts_uvd[:,:,0*this_k:3*(this_k+1)]
+            #     (_K_rays_pts_uvd[:,:,0*this_k:3*(this_k+1)])[~valid_mask_outbbox_list[i]] =K_rays_pts_uvd[:,:,0*this_k:3*(this_k+1)]
             
             _rays_d_pts_local[~valid_mask_outbbox_list[i]] = rays_d_pts_local.view(-1, self.N_samples, 3)
             _rays_pts_local = _rays_pts_local.view(*rays_pts_global.shape)
             _rays_pts_uvd = _rays_pts_uvd.view(*rays_pts_global.shape)
             b,p,c = rays_pts_global.shape
-            _K_rays_pts_uvd = _K_rays_pts_uvd.view(b,p,c*K)
+            # _K_rays_pts_uvd = _K_rays_pts_uvd.view(b,p,c*K)
 
 
             _rays_d_pts_local = _rays_d_pts_local.view(*rays_pts_global.shape)
@@ -998,7 +998,7 @@ class VoxelHuman(nn.Module):
             rays_pts_local_list.append(_rays_pts_local)
 
             rays_pts_uvd_list.append(_rays_pts_uvd)
-            K_rays_pts_uvd_list.append(_K_rays_pts_uvd)
+            # K_rays_pts_uvd_list.append(_K_rays_pts_uvd)
             rays_d_pts_local_list.append(_rays_d_pts_local)
 
             ### calculcate forward skinning transformation
@@ -1009,7 +1009,7 @@ class VoxelHuman(nn.Module):
             forward_skinning_transformation_list.append(forward_T)
 
 
-        return rays_pts_local_list,rays_pts_uvd_list,K_rays_pts_uvd_list, rays_pts_global, mask_outbbox_list, valid_mask_outbbox_list, \
+        return rays_pts_local_list,rays_pts_uvd_list,None, rays_pts_global, mask_outbbox_list, valid_mask_outbbox_list, \
         mask_outbbox, forward_skinning_transformation_list, z_vals, rays_d_pts_local_list, bbox_transformation_list, smpl_v, actual_vox_bbox
 
     def get_rays(self, focal, c2w):
@@ -1263,9 +1263,9 @@ class VoxelHuman(nn.Module):
             data.repeat(batch_size, 1, 1) for data in rays_pts_uvd_list
         ]
 
-        K_rays_pts_uvd_list = [
-            data.repeat(batch_size, 1, 1) for data in K_rays_pts_uvd_list
-        ]
+        # K_rays_pts_uvd_list = [
+        #     data.repeat(batch_size, 1, 1) for data in K_rays_pts_uvd_list
+        # ]
         rays_d_pts_local_list = [
             data.repeat(batch_size, 1, 1) for data in rays_d_pts_local_list
         ]
@@ -1306,7 +1306,7 @@ class VoxelHuman(nn.Module):
             cur_mask = ~valid_mask_outbbox_list[i]
             _cur_xyz = rays_pts_local_list[i][cur_mask].view(-1, 3)
             _cur_uvd = rays_pts_uvd_list[i][cur_mask].view(-1, 3)
-            K_cur_uvd = K_rays_pts_uvd_list[i][cur_mask].view(-1, 3*self.K_numb)
+            # K_cur_uvd = K_rays_pts_uvd_list[i][cur_mask].view(-1, 3*self.K_numb)
             _cur_rays_d = rays_d_pts_local_list[i][cur_mask].view(-1, 3)
 
             ### mask out points outside the original bbox ###
@@ -1324,7 +1324,7 @@ class VoxelHuman(nn.Module):
             cur_xyz = _cur_xyz[cur_new_mask]
             cur_uvd = _cur_uvd[cur_new_mask]
             # cur_new_mask__for
-            K_cur_uvd = K_cur_uvd[cur_new_mask]
+            # K_cur_uvd = K_cur_uvd[cur_new_mask]
             # import pdb; pdb.set_trace()
 
             cur_rays_d = _cur_rays_d[cur_new_mask]
@@ -1363,7 +1363,7 @@ class VoxelHuman(nn.Module):
             #     raise NotImplementedError
             # import pdb; pdb.set_trace()
             # cur_input = cur_uvd.view(batch_size, -1, 3)
-            K_cur_uvd = K_cur_uvd.view(batch_size, -1, 3*self.K_numb)
+            # K_cur_uvd = K_cur_uvd.view(batch_size, -1, 3*self.K_numb)
             # print(cur_input.max(dim=1)[0])
             # print(cur_input.min(dim=1)[0])
             if self.opt.input_ch_views == 3:
