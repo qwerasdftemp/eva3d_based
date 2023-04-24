@@ -19,60 +19,6 @@ from pytorch3d.ops import interpolate_face_attributes
 from torch_utils.ops import grid_sample_gradfix
 from training.networks_stylegan2 import FullyConnectedLayer
 # from volui
-def generate_planes():
-    """
-    Defines planes by the three vectors that form the "axes" of the
-    plane. Should work with arbitrary number of planes and planes of
-    arbitrary orientation.
-    """
-    # return torch.tensor([[[1, 0, 0],
-    #                         [0, 1, 0],
-    #                         [0, 0, 1]],
-    #                         [[1, 0, 0],
-    #                         [0, 0, 1],
-    #                         [0, 1, 0]],
-    #                         [[0, 0, 1],
-    #                         [1, 0, 0],
-    #                         [0, 1, 0]]], dtype=torch.float32)
-    return torch.tensor([[[1, 0, 0],
-                            [0, 1, 0],
-                            [0, 0, 1]],
-                            [[1, 0, 0],
-                            [0, 0, 1],
-                            [0, 1, 0]],
-                            [[0, 0, 1],
-                            [0, 1, 0],
-                            [1, 0, 0]]], dtype=torch.float32)
-
-def project_onto_planes(planes, coordinates):
-    """
-    Does a projection of a 3D point onto a batch of 2D planes,
-    returning 2D plane coordinates.
-
-    Takes plane axes of shape n_planes, 3, 3
-    # Takes coordinates of shape N, M, 3
-    # returns projections of shape N*n_planes, M, 2
-    """
-    N, M, C = coordinates.shape
-    n_planes, _, _ = planes.shape
-    coordinates = coordinates.unsqueeze(1).expand(-1, n_planes, -1, -1).reshape(N*n_planes, M, 3)
-    inv_planes = torch.linalg.inv(planes).unsqueeze(0).expand(N, -1, -1, -1).reshape(N*n_planes, 3, 3)
-    projections = torch.bmm(coordinates, inv_planes)
-    return projections[..., :2]
-
-def sample_from_planes(plane_axes, plane_features, coordinates, mode='bilinear', padding_mode='zeros', box_warp=None):
-    assert padding_mode == 'zeros'
-    N, n_planes, C, H, W = plane_features.shape
-    _, M, _ = coordinates.shape
-    plane_features = plane_features.view(N*n_planes, C, H, W)
-    
-    # import pdb; pdb.set_trace()
-
-    coordinates = (2/box_warp) * coordinates # TODO: add specific box bounds
-    
-    projected_coordinates = project_onto_planes(plane_axes, coordinates).unsqueeze(1)
-    output_features = grid_sample_gradfix.grid_sample(plane_features, projected_coordinates.float()).permute(0, 3, 2, 1).reshape(N, n_planes, M, C)
-    return output_features
 
 class VoxelSDFRenderer(nn.Module):
     def __init__(self, opt, xyz_min, xyz_max, style_dim=256, mode='train'):
@@ -305,47 +251,7 @@ class VoxelSDFRenderer(nn.Module):
 
         return rgb, features, sdf, mask, xyz, eikonal_term
 
-class OSGDecoder(torch.nn.Module):
-    def __init__(self, n_features, options):
-        super().__init__()
-        self.hidden_dim = 64
-        # self.merge_feature = torch.nn.Sequential(
-        #     FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
-        #     torch.nn.Softplus(),
-        #     FullyConnectedLayer(self.hidden_dim, 1 + options['decoder_output_dim'], lr_multiplier=options['decoder_lr_mul'])
-        # )
 
-        self.net = torch.nn.Sequential(
-            FullyConnectedLayer(n_features, self.hidden_dim, lr_multiplier=options['decoder_lr_mul']),
-            torch.nn.Softplus(),
-            FullyConnectedLayer(self.hidden_dim,self.hidden_dim, lr_multiplier=options['decoder_lr_mul'])
-        )
-        self.act = torch.nn.Softplus()
-        self.sdf_layer =  LinearLayer(self.hidden_dim, 1, freq_init=True)
-        self.feature_layer = LinearLayer(self.hidden_dim, options['decoder_output_dim'], freq_init=True)
-
-    def forward(self, sampled_features, ray_directions):
-        # Aggregate features
-        # sampled_features = sampled_features.mean(1)
-        x = sampled_features
-
-        N, M, C = x.shape
-        x = x.view(N*M, C)
-
-        x = self.net(x)
-        x = self.act(x)
-        
-        sdf  = self.sdf_layer(x)
-        rgb = self.feature_layer(x)
-
-        # rgb = torch.sigmoid(rgb)*(1 + 2*0.001) - 0.001
-        
-        rgb = rgb.view(N, M, -1)
-        sdf = sdf.view(N, M, -1)
-        # print(rgb.mean(dim=1))
-        outputs = torch.cat([rgb, sdf], -1)
-
-        return outputs
 
 class VoxelHuman(nn.Module):
     def __init__(self, opt, smpl_cfgs, style_dim, out_im_res=(128, 64), mode='train'):
@@ -797,9 +703,20 @@ class VoxelHuman(nn.Module):
         now_xyz_max = global_smplv.max(dim=0)[0]+torch.tensor([0.15,0.15,0.15]).to(global_smplv.device)
         # import pdb; pdb.set_trace()
         for i, cur_vox in enumerate(self.vox_list):
+            vox_i = self.vox_index[i]
+            if vox_i == 15:
+                cur_transforms_mat = rel_transforms[0, vox_i]
+            elif vox_i == 12:
+                cur_transforms_mat = rel_transforms[0, 6]
+            else:
+                cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
+            
+            rays_o_local, rays_d_local = self.transform_to_vox_local(rays_o, rays_d, cur_transforms_mat, trans)
+            bbox_transformation_list.append(cur_transforms_mat)
 
+            cur_xyz_min, cur_xyz_max = actual_vox_bbox[i]
             cur_t_min, cur_t_max, cur_mask_outbbox = self.sample_ray_bbox_intersect(
-                rays_o, rays_d, now_xyz_min, now_xyz_max
+                rays_o_local, rays_d_local, cur_xyz_min, cur_xyz_max
             )
             t_min_list.append(cur_t_min)
             t_max_list.append(cur_t_max)
