@@ -1070,7 +1070,7 @@ class VoxelHumanGenerator(nn.Module):
                 inject_index=None, truncation=1, truncation_latent=None,
                 input_is_latent=False, return_sdf=False, return_xyz=False, return_eikonal=False,
                 return_normal=False, return_mask=False, inv_Ks=None, return_sdf_xyz=False,
-                w_space=False, gamma_list=None, beta_list=None, fix_viewdir=False,return_gqz_normal=False):
+                w_space=False, gamma_list=None, beta_list=None, fix_viewdir=False):
         # import pdb; pdb.set_trace()
         # if w_space:
         #     latent = [None, None]
@@ -1119,21 +1119,5 @@ class VoxelHumanGenerator(nn.Module):
             out += (features, )
         if return_sdf_xyz:
             out += (sdf_xyz, )
-        if return_gqz_normal:
-            # import pdb; pdb.set_trace()
-            # pass
-            depth_image = xyz[1][0].unsqueeze(-1)
-            ray_origins = xyz[-2]
-            ray_directions = xyz[-1]
-            img = ray_origins + ray_directions*depth_image
-            
 
-            shift_l, shift_r = img[2:,:], img[:-2,:]
-            shift_u, shift_d = img[:,2:], img[:,:-2]
-            diff_hor = F.normalize(shift_r - shift_l, dim=2)[:, 1:-1]
-            diff_ver = F.normalize(shift_u - shift_d, dim=2)[1:-1, :]
-            # normal = -torch.cross(diff_hor,diff_ver)
-            normal = -torch.cross(diff_ver,diff_hor)
-            img = F.normalize(normal,dim=1)
-            out += (img, )
         return out

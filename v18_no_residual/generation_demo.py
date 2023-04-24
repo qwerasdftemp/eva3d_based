@@ -33,7 +33,7 @@ from pytorch3d.renderer import (
     RasterizationSettings, MeshRenderer, MeshRasterizer, BlendParams,
     SoftSilhouetteShader, HardPhongShader, PointLights, TexturesVertex,
 )
-import cv2
+
 # torch.random.manual_seed(10086)
 # import random
 # random.seed(10086)
@@ -46,9 +46,6 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
     g_ema.train_renderer = False
     sample_z_list = {}
     for i in tqdm(range(opt.identities)):
-        # if i!=2:
-        #     continue
-        
         if is_video:
             sample_z = torch.randn(1, opt.style_dim, device=device)
         else:
@@ -64,17 +61,15 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
 
         if is_video:
             video_list = []
-            normal_list = []
-            all_numb=120
-            for k in tqdm(range(all_numb)):
+            for k in tqdm(range(120)):
                 # print(k,angle)
                 if k < 30:
                     angle = (panning_angle / 2) * (k / 30)
                 elif k >= 30 and k < 90:
                     angle = panning_angle / 2 - panning_angle * ((k - 30) / 60)
                 else:
-                    angle = -panning_angle / 2 * ((all_numb - k) / 30)
-                # print(k,angle)
+                    angle = -panning_angle / 2 * ((120 - k) / 30)
+                print(k,angle)
                 delta = R.from_rotvec(angle * np.array([0, 1, 0]))
                 r = R.from_rotvec(sample_theta[0, :3].cpu().numpy())
                 new_r = delta * r
@@ -92,30 +87,14 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
                                 truncation=opt.truncation_ratio,
                                 truncation_latent=mean_latent,
                                 return_eikonal=False,
-                                return_normal=True,
+                                return_normal=False,
                                 return_mask=False,
-                                fix_viewdir=True,
-                                return_gqz_normal=True)
+                                fix_viewdir=True)
                 rgb_images_thumbs = out[1].detach().cpu()[..., :3]
-                normal =  out[-1].detach().cpu()[..., :3]
-                normal =( (normal.numpy() + 1) / 2. * 255).astype(np.uint8)
-                
-                normal =cv2.resize(normal,(rgb_images_thumbs.shape[2],rgb_images_thumbs.shape[1]))
-                # normal = out[-1].detach().cpu()[..., :3]
-                # import pdb; pdb.set_trace()
-                rgb_sample = ((rgb_images_thumbs.numpy() + 1) / 2. * 255. + 0.5).astype(np.uint8)[0]
-                
                 g_ema.zero_grad()
-                # video_list.append(rgb_sample[None,:,:,:])
-                
-                normal_list.append(np.hstack([rgb_sample,normal])[None,:,:,:])
                 video_list.append((rgb_images_thumbs.numpy() + 1) / 2. * 255. + 0.5)
             all_img = np.concatenate(video_list, 0).astype(np.uint8)
-            # all_img = np.concatenate(video_list, 0).astype(np.uint8)
-            all_normal = np.concatenate(normal_list, 0).astype(np.uint8)
-            imageio.mimwrite(os.path.join(opt.results_dst_dir, 'images_paper_video', 'video_{}.mp4'.format(str(i).zfill(7))), all_img, fps=30, quality=8,macro_block_size=1)
-            imageio.mimwrite(os.path.join(opt.results_dst_dir, 'images_paper_video', 'normal_video_{}.mp4'.format(str(i).zfill(7))), all_normal, fps=30, quality=8,macro_block_size=1)
-            # fff
+            imageio.mimwrite(os.path.join(opt.results_dst_dir, 'images_paper_video', 'video_{}.mp4'.format(str(i).zfill(7))), all_img, fps=30, quality=8)
         else:
             img_list = []
             for k in range(3):
@@ -151,13 +130,12 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
                 img_list.append(rgb_images_thumbs)
         ##################################
         continue
-        # import pdb; pdb.set_trace()
-        # latent = g_ema.styles_and_noise_forward(sample_z[:1], None, opt.truncation_ratio,
-        #                                         mean_latent, False)
+        latent = g_ema.styles_and_noise_forward(sample_z[:1], None, opt.truncation_ratio,
+                                                mean_latent, False)
 
-        sdf = g_ema.renderer.marching_cube_posed(sample_z[:1], sample_beta, sample_theta,truncation = opt.truncation_ratio, resolution=500, size=1.4).detach()
-        marching_cubes_mesh, _, _ = extract_mesh_with_marching_cubes(sdf, level_set=12)
-        # marching_cubes_mesh = trimesh.smoothing.filter_humphrey(marching_cubes_mesh, beta=0.2, iterations=5)
+        sdf = g_ema.renderer.marching_cube_posed(latent[0], sample_beta, sample_theta, resolution=500, size=1.4).detach()
+        marching_cubes_mesh, _, _ = extract_mesh_with_marching_cubes(sdf, level_set=0)
+        marching_cubes_mesh = trimesh.smoothing.filter_humphrey(marching_cubes_mesh, beta=0.2, iterations=5)
         marching_cubes_mesh_filename = os.path.join(opt.results_dst_dir,'marching_cubes_meshes_posed','sample_{}_marching_cubes_mesh.obj'.format(i))
         with open(marching_cubes_mesh_filename, 'w') as f:
             marching_cubes_mesh.export(f,file_type='obj')
@@ -179,15 +157,14 @@ def generate(opt, dataset, g_ema, device, mean_latent, is_video):
 
         if is_video:
             video_list = []
-            # all_numb=120
-            for k in tqdm(range(all_numb)):
+            for k in tqdm(range(120)):
                 verts_clone = verts.clone().cpu().numpy()
                 if k < 30:
                     angle = (-panning_angle/2) * (k / 30)
                 elif k >= 30 and k < 90:
                     angle = -panning_angle/2 + panning_angle * ((k - 30) / 60)
                 else:
-                    angle = panning_angle/2 * ((all_numb - k) / 30)
+                    angle = panning_angle/2 * ((120 - k) / 30)
                 delta = R.from_rotvec(angle * np.array([0, 1, 0]))
                 verts_clone = torch.from_numpy(delta.apply(verts_clone)).float()
                 pt3d_mesh = Meshes(
