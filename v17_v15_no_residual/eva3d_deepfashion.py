@@ -15,7 +15,7 @@ from smpl_utils import init_smpl, get_J, get_shape_pose, batch_rodrigues
 from training.networks_stylegan2 import Generator as StyleGAN2Backbone
 import dnnlib
 from pytorch3d.structures import Meshes
-
+from pytorch3d.ops import interpolate_face_attributes
 from torch_utils.ops import grid_sample_gradfix
 from training.networks_stylegan2 import FullyConnectedLayer
 # from volui
@@ -519,6 +519,15 @@ class VoxelHuman(nn.Module):
         self.uvcoords = vertics_uv_position
         # print(self.uvcoords.max())
         # print(self.uvcoords.min())
+        
+        # import pdb; pdb.set_trace()
+        # face_texture_ids = 
+        # mesh = Meshes(verts=[verts], faces=[faces[0]], textures=None)
+        
+        # face_attributes = uvcoords[0,uvfaces[0]]
+        
+        # barycentric_coords = interpolate_face_attributes(mesh, uvfaces[0])
+        
         mapping_kwargs=dnnlib.EasyDict()
         mapping_kwargs.num_layers =2
 
@@ -526,11 +535,10 @@ class VoxelHuman(nn.Module):
         # G_kwargs = dnnlib.EasyDict(z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict())
 
         self.backbone = StyleGAN2Backbone(512, 0, 512, img_resolution=512, img_channels=32*3, mapping_kwargs=mapping_kwargs)
-        self.backbone_face = StyleGAN2Backbone(512, 0, 512, img_resolution=256, img_channels=32*3, mapping_kwargs=mapping_kwargs)
 
         self.plane_axes = generate_planes()
         self.decoder = OSGDecoder(32, {'decoder_lr_mul': 1, 'decoder_output_dim': 3})
-        self.K_numb = 3
+        self.K_numb = 10
         self.residual_part = SirenGenerator(D=3, W=128, style_dim=512, input_ch=3*self.K_numb,
                                       output_ch=3, input_ch_views=False,
                                       output_features=False)
@@ -834,7 +842,7 @@ class VoxelHuman(nn.Module):
         smpl_v_inv = torch.matmul(self.smpl_model.lbs_weights.reshape(-1, self.num_joints), rel_transforms.reshape(1, self.num_joints, 16)).reshape(-1, 4, 4)
         smpl_v_inv = torch.inverse(smpl_v_inv)
 
-        # cur_smpl_v = smpl_v + trans
+        # cur_smpl_v = smpl_v + trans fknn x zf
 
         # import pdb; pdb.set_trace()
         # valid_mask_outbbox_list[0] = mask_outbbox
@@ -903,7 +911,7 @@ class VoxelHuman(nn.Module):
             
 
             gather_nearest_point= torch.gather(cur_smpl_v.reshape(1, -1, 1, 3).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 3))
-            k_gather_nearest_point = gather_nearest_point.view(-1,3,3)
+            k_gather_nearest_point = gather_nearest_point.view(-1,K,3)
             # import pdb; pdb.set_trace()
             K_direction = flat_rays_pts_global[0].unsqueeze(1)-k_gather_nearest_point
             
@@ -1292,8 +1300,6 @@ class VoxelHuman(nn.Module):
         styles = self.backbone.mapping(styles,None,truncation_psi = truncation)
         planes = self.backbone.synthesis(styles)
         planes = planes.view(len(planes), 3, 32, planes.shape[-2], planes.shape[-1])
-        
-        
         # planes = torch.tanh(planes)
 
         for i in range(1):
@@ -1340,11 +1346,7 @@ class VoxelHuman(nn.Module):
             ).reshape(-1, 1)
 
             window_alpha = 4; window_beta = 8
-            # print(cur_xyz.max())
-            # print(cur_xyz.min())
-            cur_xyz = (cur_xyz - (self.all_xyz_min  + self.all_xyz_max ) / 2.) / (self.all_xyz_max- self.all_xyz_min )*2
-            # print(cur_xyz.max())
-            # print(cur_xyz.min())
+            cur_xyz = (cur_xyz - (self.vox_list[i].xyz_min + self.vox_list[i].xyz_max) / 2.) / (self.vox_list[i].xyz_max - self.vox_list[i].xyz_min)
             weights = torch.exp(-window_alpha * ((cur_xyz * 2) ** window_beta).sum(-1))
             weights = torch.ones_like(weights)
             # print(weights.shape)
@@ -1364,8 +1366,8 @@ class VoxelHuman(nn.Module):
             # else:
             #     raise NotImplementedError
             # import pdb; pdb.set_trace()
-            cur_input = cur_xyz.view(batch_size, -1, 3)
-            
+            cur_input = cur_uvd.view(batch_size, -1, 3)
+            K_cur_uvd = K_cur_uvd.view(batch_size, -1, 3*self.K_numb)
             # print(cur_input.max(dim=1)[0])
             # print(cur_input.min(dim=1)[0])
             # if w_space:
@@ -1381,12 +1383,12 @@ class VoxelHuman(nn.Module):
             # # 在这里搞 triplane
             # import pdb; pdb.set_trace()
             # import pdb; pdb.set_trace()
-            # resiudal = self.residual_part(K_cur_uvd,styles[:,0,:])
+            resiudal = self.residual_part(K_cur_uvd,styles[:,0,:])
             
-            # resiudal = torch.tanh(resiudal)[:,:,0:3]*0.1
+            resiudal = torch.tanh(resiudal)[:,:,0:3]*0.1
 
-            # cur_input = resiudal+cur_input
-# 
+            cur_input = resiudal+cur_input
+
             sampled_features = sample_from_planes(self.plane_axes, planes, cur_input, padding_mode='zeros', box_warp=2)
             sampled_features = sampled_features[:,0]*sampled_features[:,1] + sampled_features[:,1]*sampled_features[:,2] + sampled_features[:,0]*sampled_features[:,2]
             # sampled_features = sampled_features.mean(1)
