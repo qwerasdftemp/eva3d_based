@@ -1390,8 +1390,8 @@ class VoxelHuman(nn.Module):
             # cur_input = resiudal+cur_input
 
             sampled_features = sample_from_planes(self.plane_axes, planes, cur_input, padding_mode='zeros', box_warp=2)
-            sampled_features = sampled_features[:,0]*sampled_features[:,1] + sampled_features[:,1]*sampled_features[:,2] + sampled_features[:,0]*sampled_features[:,2]
-            # sampled_features = sampled_features.mean(1)
+            # sampled_features = sampled_features[:,0]*sampled_features[:,1] + sampled_features[:,1]*sampled_features[:,2] + sampled_features[:,0]*sampled_features[:,2]
+            sampled_features = sampled_features.mean(1)
             # import pdb; pdb.set_trace()
             tmp_output = self.decoder(sampled_features,None).view(-1, 4)
             # tmp_output[:, -1:] = 0
