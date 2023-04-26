@@ -767,7 +767,7 @@ class VoxelHuman(nn.Module):
         #     if i==0:
         #         continue
         #     valid_mask_outbbox_list[0] = valid_mask_outbbox_list[0] | valid_mask_outbbox_list[i]
-        
+        self.
         for i, cur_vox in enumerate(self.vox_list):
             # vox_i = self.vox_index[i]
             # cur_transforms_mat = rel_transforms[0, self.parents[vox_i]]
@@ -814,9 +814,7 @@ class VoxelHuman(nn.Module):
             per_point_inv_transformation = torch.matmul(cur_inv_shape_transforms, per_point_inv_transformation)
             gather_inv_T = torch.gather(per_point_inv_transformation.reshape(1, -1, 1, 4, 4).repeat(1, 1, K, 1, 1), 1, nn.idx.reshape(1, -1, K, 1, 1).repeat(1, 1, 1, 4, 4))
             inv_T = (gather_inv_T * interp_weights).sum(-3).reshape(1, -1, 4, 4)
-            # import pdb; pdb.set_trace()
-            uvcoords = self.uvcoords.to(inv_T.device)[self.smpl_index[i],...]
-            
+            uvcoords = self.uvcoords.to(inv_T.device)
             gather_uv= torch.gather(uvcoords.reshape(1, -1, 1, 2).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 2))
             
             # K_gather_uv = gather_uv.reshape(1,-1,2*K)
@@ -879,7 +877,8 @@ class VoxelHuman(nn.Module):
             rays_d_pts_local = torch.matmul(inv_T[:, :, :3, :3], flat_rays_d_pts_global.unsqueeze(-1))[:, :, :3, 0]
 
             
-
+            # print(i,gather_uv.max(),gather_uv.min())
+            # print(i,gather_uv.max(),gather_uv.min())
 
             rays_pts_uvd = torch.cat([gather_uv,the_distance],dim=2)
             # K_rays_pts_uvd = torch.cat([K_gather_uv,K_the_distance],dim=2)

@@ -814,9 +814,7 @@ class VoxelHuman(nn.Module):
             per_point_inv_transformation = torch.matmul(cur_inv_shape_transforms, per_point_inv_transformation)
             gather_inv_T = torch.gather(per_point_inv_transformation.reshape(1, -1, 1, 4, 4).repeat(1, 1, K, 1, 1), 1, nn.idx.reshape(1, -1, K, 1, 1).repeat(1, 1, 1, 4, 4))
             inv_T = (gather_inv_T * interp_weights).sum(-3).reshape(1, -1, 4, 4)
-            # import pdb; pdb.set_trace()
-            uvcoords = self.uvcoords.to(inv_T.device)[self.smpl_index[i],...]
-            
+            uvcoords = self.uvcoords.to(inv_T.device)
             gather_uv= torch.gather(uvcoords.reshape(1, -1, 1, 2).repeat(1, 1, K, 1), 1, nn.idx.reshape(1, -1, K, 1).repeat(1, 1, 1, 2))
             
             # K_gather_uv = gather_uv.reshape(1,-1,2*K)
@@ -854,7 +852,8 @@ class VoxelHuman(nn.Module):
             cos_sim_dirction[cos_sim_dirction>0]=1
             cos_sim_dirction[cos_sim_dirction<0]=-1
             
-            the_distance = the_distance*cos_sim_dirction
+            # the_distance = the_distance*cos_sim_dirction
+            the_distance = the_distance
             # K_the_distance = k_cos_sim_dirction*K_the_distance
             # import pdb; pdb.set_trace()
             # gather_uv = gather_uv[:,:,0,:]
