@@ -855,7 +855,7 @@ class VoxelHuman(nn.Module):
             cos_sim_dirction[cos_sim_dirction>0]=1
             cos_sim_dirction[cos_sim_dirction<0]=-1
             
-            the_distance = the_distance*cos_sim_dirction
+            # the_distance = the_distance*cos_sim_dirction
             # K_the_distance = k_cos_sim_dirction*K_the_distance
             # import pdb; pdb.set_trace()
             # gather_uv = gather_uv[:,:,0,:]
@@ -1265,7 +1265,7 @@ class VoxelHuman(nn.Module):
             window_alpha = 4; window_beta = 8
             cur_xyz = (cur_xyz - (self.vox_list[i].xyz_min + self.vox_list[i].xyz_max) / 2.) / (self.vox_list[i].xyz_max - self.vox_list[i].xyz_min)
             weights = torch.exp(-window_alpha * ((cur_xyz * 2) ** window_beta).sum(-1))
-            weights = torch.ones_like(weights)
+            # weights = torch.ones_like(weights)
             # print(weights.shape)
             # import pdb; pdb.set_trace()
             if return_eikonal:
